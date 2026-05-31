@@ -11,6 +11,35 @@ import Link from "next/link";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
+const CARD_BRAND_LOGOS: Record<string, string> = {
+  visa: "/cards/visa.svg",
+  mastercard: "/cards/mastercard.svg",
+  amex: "/cards/amex.svg",
+  discover: "/cards/discover.svg",
+  rupay: "/cards/rupay.svg",
+};
+
+function detectCardBrand(number: string): string {
+  const num = number.replace(/\s/g, "");
+  if (num.startsWith("37")) return "amex";
+  if (/^(60|65|81|82)/.test(num)) return "rupay";
+  if (num.startsWith("4")) return "visa";
+  if (num.startsWith("5")) return "mastercard";
+  if (num.startsWith("6")) return "discover";
+  return "unknown";
+}
+
+function formatCardNumber(value: string): string {
+  const digits = value.replace(/\D/g, "");
+  const brand = detectCardBrand(digits);
+  if (brand === "amex") {
+    const parts = [digits.slice(0, 4), digits.slice(4, 10), digits.slice(10, 15)];
+    return parts.filter(Boolean).join(" ");
+  }
+  const parts = [digits.slice(0, 4), digits.slice(4, 8), digits.slice(8, 12), digits.slice(12, 16)];
+  return parts.filter(Boolean).join(" ");
+}
+
 interface CabinAvailability {
   seats: number;
   available: number;
@@ -91,6 +120,8 @@ function BookPageContent() {
 
   const [cabinClass, setCabinClass] = useState<"economy" | "premium_economy" | "business">("economy");
 
+  const [savedCards, setSavedCards] = useState<{ id: string; label: string; card_last_four: string; card_brand: string; expiry_month: number; expiry_year: number }[]>([]);
+  const [selectedCardId, setSelectedCardId] = useState<string>("");
   const [cardNumber, setCardNumber] = useState("");
   const [expiry, setExpiry] = useState("");
   const [cvv, setCvv] = useState("");
@@ -197,6 +228,18 @@ function BookPageContent() {
         if (data) {
           setLoyaltyPoints(data.points);
           setPointsEarned12m(data.points_earned_12m);
+        }
+      })
+      .catch(() => {});
+
+    fetch(`${API_URL}/api/v1/payment-methods`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((r) => r.ok ? r.json() : [])
+      .then((data) => {
+        if (Array.isArray(data) && data.length > 0) {
+          setSavedCards(data);
+          setSelectedCardId(data[0].id);
         }
       })
       .catch(() => {});
@@ -371,16 +414,27 @@ function BookPageContent() {
         setReturnBookings(retBookings);
       }
 
+      const paymentBody: Record<string, unknown> = {
+        booking_id: outboundBookings[0].id,
+        amount: afterDiscount,
+        method: finalPrice <= 0 ? "points" : "credit_card",
+        points_used: usePoints ? pointsToUse : 0,
+      };
+      if (finalPrice > 0 && selectedCardId) {
+        paymentBody.payment_method_id = selectedCardId;
+        paymentBody.cvv = cvv;
+        const card = savedCards.find(c => c.id === selectedCardId);
+        if (card) {
+          paymentBody.expiry_month = card.expiry_month;
+          paymentBody.expiry_year = card.expiry_year;
+        }
+      } else if (finalPrice > 0) {
+        paymentBody.card_number = cardNumber.replace(/\s/g, "");
+      }
       await fetch(`${API_URL}/api/v1/payments`, {
         method: "POST",
         headers,
-        body: JSON.stringify({
-          booking_id: outboundBookings[0].id,
-          amount: afterDiscount,
-          method: finalPrice <= 0 ? "points" : "credit_card",
-          card_number: finalPrice > 0 ? cardNumber : undefined,
-          points_used: usePoints ? pointsToUse : 0,
-        }),
+        body: JSON.stringify(paymentBody),
       });
 
       setStep("confirmation");
@@ -823,20 +877,123 @@ function BookPageContent() {
             {/* Card Details (only if remaining balance after points) */}
             {finalPrice > 0 && (
               <>
-                <div>
-                  <label className="text-xs font-medium text-muted-foreground mb-1 block">Card Number</label>
-                  <Input value={cardNumber} onChange={(e) => setCardNumber(e.target.value)} placeholder="4111 1111 1111 1111" />
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="text-xs font-medium text-muted-foreground mb-1 block">Expiry</label>
-                    <Input value={expiry} onChange={(e) => setExpiry(e.target.value)} placeholder="MM/YY" />
+                {savedCards.length > 0 ? (
+                  <div className="space-y-3">
+                    <label className="text-xs font-medium text-muted-foreground mb-1 block">Payment Method</label>
+                    <div className="space-y-2">
+                      {savedCards.map((card) => (
+                        <button
+                          key={card.id}
+                          type="button"
+                          onClick={() => { setSelectedCardId(card.id); setCardNumber(""); }}
+                          className={`w-full flex items-center gap-3 p-3 rounded-lg border transition-colors ${selectedCardId === card.id ? "border-blue-500 bg-blue-50/50 dark:bg-blue-950/20" : "border-border hover:border-muted-foreground/30"}`}
+                        >
+                          <div className="w-10 h-7 rounded bg-slate-100 dark:bg-slate-800 flex items-center justify-center overflow-hidden">
+                            {CARD_BRAND_LOGOS[card.card_brand] ? (
+                              <img src={CARD_BRAND_LOGOS[card.card_brand]} alt={card.card_brand} className="h-5 w-auto object-contain" />
+                            ) : (
+                              <span className="text-[10px] font-bold uppercase text-muted-foreground">Card</span>
+                            )}
+                          </div>
+                          <div className="flex-1 text-left">
+                            <p className="text-sm font-medium">{card.label}</p>
+                            <p className="text-xs text-muted-foreground font-mono">••••{card.card_last_four} &middot; {String(card.expiry_month).padStart(2, "0")}/{card.expiry_year}</p>
+                          </div>
+                          {selectedCardId === card.id && (
+                            <div className="w-5 h-5 rounded-full bg-blue-500 flex items-center justify-center">
+                              <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>
+                            </div>
+                          )}
+                        </button>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={() => { setSelectedCardId(""); }}
+                        className={`w-full flex items-center gap-3 p-3 rounded-lg border transition-colors ${selectedCardId === "" ? "border-blue-500 bg-blue-50/50 dark:bg-blue-950/20" : "border-border hover:border-muted-foreground/30"}`}
+                      >
+                        <div className="w-10 h-7 rounded bg-slate-100 dark:bg-slate-800 flex items-center justify-center">
+                          <span className="text-lg text-muted-foreground">+</span>
+                        </div>
+                        <p className="text-sm font-medium">Use a different card</p>
+                      </button>
+                    </div>
+                    {selectedCardId && (
+                      <div>
+                        <label className="text-xs font-medium text-muted-foreground mb-1 block">CVV</label>
+                        <Input value={cvv} onChange={(e) => setCvv(e.target.value.replace(/\D/g, "").slice(0, 4))} placeholder="123" type="password" className="w-32" />
+                      </div>
+                    )}
+                    {!selectedCardId && (
+                      <>
+                        <div>
+                          <label className="text-xs font-medium text-muted-foreground mb-1 block">Card Number</label>
+                          <div className="relative">
+                            <Input
+                              value={cardNumber}
+                              onChange={(e) => setCardNumber(formatCardNumber(e.target.value))}
+                              placeholder="4111 1111 1111 1111"
+                              maxLength={19}
+                              className="pr-20 font-mono"
+                            />
+                            {cardNumber.replace(/\s/g, "").length > 0 && (
+                              <span className="absolute right-3 top-1/2 -translate-y-1/2">
+                                {CARD_BRAND_LOGOS[detectCardBrand(cardNumber)] ? (
+                                  <img src={CARD_BRAND_LOGOS[detectCardBrand(cardNumber)]} alt={detectCardBrand(cardNumber)} className="h-5 w-auto" />
+                                ) : (
+                                  <span className="text-xs font-medium text-muted-foreground bg-muted px-2 py-0.5 rounded">Card</span>
+                                )}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <label className="text-xs font-medium text-muted-foreground mb-1 block">Expiry</label>
+                            <Input value={expiry} onChange={(e) => setExpiry(e.target.value)} placeholder="MM/YY" />
+                          </div>
+                          <div>
+                            <label className="text-xs font-medium text-muted-foreground mb-1 block">CVV</label>
+                            <Input value={cvv} onChange={(e) => setCvv(e.target.value.replace(/\D/g, "").slice(0, 4))} placeholder="123" type="password" className="w-32" />
+                          </div>
+                        </div>
+                      </>
+                    )}
                   </div>
-                  <div>
-                    <label className="text-xs font-medium text-muted-foreground mb-1 block">CVV</label>
-                    <Input value={cvv} onChange={(e) => setCvv(e.target.value)} placeholder="123" type="password" />
-                  </div>
-                </div>
+                ) : (
+                  <>
+                    <div>
+                      <label className="text-xs font-medium text-muted-foreground mb-1 block">Card Number</label>
+                      <div className="relative">
+                        <Input
+                          value={cardNumber}
+                          onChange={(e) => setCardNumber(formatCardNumber(e.target.value))}
+                          placeholder="4111 1111 1111 1111"
+                          maxLength={19}
+                          className="pr-20 font-mono"
+                        />
+                        {cardNumber.replace(/\s/g, "").length > 0 && (
+                          <span className="absolute right-3 top-1/2 -translate-y-1/2">
+                            {CARD_BRAND_LOGOS[detectCardBrand(cardNumber)] ? (
+                              <img src={CARD_BRAND_LOGOS[detectCardBrand(cardNumber)]} alt={detectCardBrand(cardNumber)} className="h-5 w-auto" />
+                            ) : (
+                              <span className="text-xs font-medium text-muted-foreground bg-muted px-2 py-0.5 rounded">Card</span>
+                            )}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-xs font-medium text-muted-foreground mb-1 block">Expiry</label>
+                        <Input value={expiry} onChange={(e) => setExpiry(e.target.value)} placeholder="MM/YY" />
+                      </div>
+                      <div>
+                        <label className="text-xs font-medium text-muted-foreground mb-1 block">CVV</label>
+                        <Input value={cvv} onChange={(e) => setCvv(e.target.value.replace(/\D/g, "").slice(0, 4))} placeholder="123" type="password" className="w-32" />
+                      </div>
+                    </div>
+                  </>
+                )}
               </>
             )}
 
@@ -877,7 +1034,7 @@ function BookPageContent() {
               <Button variant="outline" onClick={() => setStep("details")}>Back</Button>
               <Button
                 className="flex-1"
-                disabled={(finalPrice > 0 && (!cardNumber.trim() || !expiry.trim() || !cvv.trim())) || submitting}
+                disabled={(finalPrice > 0 && (selectedCardId ? !cvv.trim() : (!cardNumber.trim() || !expiry.trim() || !cvv.trim()))) || submitting}
                 onClick={handleBook}
               >
                 {submitting ? "Processing..." : finalPrice <= 0 ? "Confirm Booking (Points)" : `Pay $${finalPrice.toFixed(2)}`}

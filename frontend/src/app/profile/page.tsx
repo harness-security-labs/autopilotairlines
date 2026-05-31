@@ -81,11 +81,6 @@ export default function ProfilePage() {
     setSaving(false);
   };
 
-  const maskCard = (card: string | null) => {
-    if (!card) return "---";
-    return `**** **** **** ${card.slice(-4)}`;
-  };
-
   const tierColor = (tier: string) => {
     switch (tier) {
       case "platinum": return "bg-slate-700 text-white";
@@ -195,15 +190,15 @@ export default function ProfilePage() {
           <div className="border-t border-border pt-5 mt-5">
             <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-3">Payment & Identity</p>
 
-            {/* Credit Card */}
             <div className="grid grid-cols-3 gap-4 items-center mb-4">
-              <label className="text-sm font-medium text-muted-foreground">Card on File</label>
+              <label className="text-sm font-medium text-muted-foreground">Payment Methods</label>
               <div className="col-span-2">
-                <p className="text-sm font-mono">{maskCard(profile?.credit_card || null)}</p>
+                <Link href="/payments">
+                  <Button variant="outline" size="sm">Manage Payment Methods</Button>
+                </Link>
               </div>
             </div>
 
-            {/* SSN - intentional PII exposure */}
             <div className="grid grid-cols-3 gap-4 items-center">
               <label className="text-sm font-medium text-muted-foreground">SSN</label>
               <div className="col-span-2">

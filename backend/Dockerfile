@@ -1,13 +1,13 @@
-FROM python:3.12-slim
+FROM ghcr.io/astral-sh/uv:python3.12-trixie
 
 WORKDIR /app
-
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
 
 COPY src/ ./src/
+COPY bin/autoreport /usr/local/bin/autoreport
+RUN chmod +x /usr/local/bin/autoreport
 
 EXPOSE 8000
 

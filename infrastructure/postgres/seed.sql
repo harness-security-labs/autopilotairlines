@@ -3138,3 +3138,41 @@ INSERT INTO loyalty_transactions (id, account_id, points, transaction_type, sour
 ('50000000-0000-0000-0000-000000000013', '20000000-0000-0000-0000-000000000005', 2000, 'earn', 'Booking BOS-ATL', NOW() - INTERVAL '100 days'),
 ('50000000-0000-0000-0000-000000000014', '20000000-0000-0000-0000-000000000001', -5000, 'redemption', 'Lounge access', NOW() - INTERVAL '10 days'),
 ('50000000-0000-0000-0000-000000000015', '20000000-0000-0000-0000-000000000002', -10000, 'redemption', 'Seat upgrade', NOW() - INTERVAL '40 days');
+
+-- Payment methods for demo users
+INSERT INTO payment_methods (id, user_id, label, card_last_four, card_brand, expiry_month, expiry_year, is_default) VALUES
+('60000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000001', 'Visa ending 1111', '1111', 'visa', 12, 2027, TRUE),
+('60000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-000000000001', 'Mastercard ending 8888', '8888', 'mastercard', 6, 2026, FALSE),
+('60000000-0000-0000-0000-000000000003', '00000000-0000-0000-0000-000000000002', 'Amex ending 2222', '2222', 'amex', 3, 2028, TRUE),
+('60000000-0000-0000-0000-000000000004', '00000000-0000-0000-0000-000000000002', 'Visa ending 9999', '9999', 'visa', 9, 2027, FALSE),
+('60000000-0000-0000-0000-000000000005', '00000000-0000-0000-0000-000000000003', 'Corporate Visa ending 3333', '3333', 'visa', 1, 2029, TRUE),
+('60000000-0000-0000-0000-000000000006', '00000000-0000-0000-0000-000000000004', 'Visa ending 4444', '4444', 'visa', 11, 2026, TRUE),
+('60000000-0000-0000-0000-000000000007', '00000000-0000-0000-0000-000000000005', 'Visa ending 5555', '5555', 'visa', 8, 2028, TRUE),
+('60000000-0000-0000-0000-000000000008', '00000000-0000-0000-0000-000000000006', 'Mastercard ending 7777', '7777', 'mastercard', 4, 2027, TRUE),
+('60000000-0000-0000-0000-000000000009', '00000000-0000-0000-0000-000000000006', 'Visa ending 6666', '6666', 'visa', 10, 2028, FALSE),
+('60000000-0000-0000-0000-000000000010', '00000000-0000-0000-0000-000000000007', 'Amex ending 3344', '3344', 'amex', 2, 2029, TRUE),
+('60000000-0000-0000-0000-000000000011', '00000000-0000-0000-0000-000000000007', 'Visa ending 8822', '8822', 'visa', 7, 2027, FALSE),
+('60000000-0000-0000-0000-000000000012', '00000000-0000-0000-0000-000000000008', 'Visa ending 4321', '4321', 'visa', 5, 2028, TRUE),
+('60000000-0000-0000-0000-000000000013', '00000000-0000-0000-0000-000000000009', 'Mastercard ending 9012', '9012', 'mastercard', 12, 2027, TRUE),
+('60000000-0000-0000-0000-000000000014', '00000000-0000-0000-0000-000000000010', 'Visa ending 2468', '2468', 'visa', 9, 2028, TRUE),
+('60000000-0000-0000-0000-000000000015', '00000000-0000-0000-0000-000000000010', 'Amex ending 1357', '1357', 'amex', 3, 2029, FALSE);
+
+-- Seed payments for all confirmed/checked_in bookings
+INSERT INTO payments (id, booking_id, amount, currency, method, status, transaction_id, card_last_four, created_at)
+SELECT
+    uuid_generate_v4(),
+    b.id,
+    f.base_price,
+    'USD',
+    'credit_card',
+    'completed',
+    'txn_seed_' || b.pnr,
+    COALESCE(
+        (SELECT pm.card_last_four FROM payment_methods pm WHERE pm.user_id = b.user_id AND pm.is_default = TRUE LIMIT 1),
+        RIGHT(u.credit_card, 4)
+    ),
+    b.created_at
+FROM bookings b
+JOIN flights f ON b.flight_id = f.id
+JOIN users u ON b.user_id = u.id
+WHERE b.status IN ('confirmed', 'checked_in');

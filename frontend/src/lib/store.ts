@@ -11,6 +11,19 @@ interface AuthState {
   loadToken: () => void;
 }
 
+async function fetchProfileName(token: string): Promise<string | null> {
+  try {
+    const res = await fetch(`${API_URL}/api/v1/users/me`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return null;
+    const profile = await res.json();
+    return profile.name || null;
+  } catch {
+    return null;
+  }
+}
+
 export const useAuthStore = create<AuthState>((set) => ({
   token: null,
   user: null,
@@ -26,7 +39,12 @@ export const useAuthStore = create<AuthState>((set) => ({
       const token = data.access_token;
       localStorage.setItem("token", token);
       const payload = JSON.parse(atob(token.split(".")[1]));
-      set({ token, user: { email: payload.email, role: payload.role, name: payload.email.split("@")[0] } });
+      const fallback = payload.email.split("@")[0];
+      set({ token, user: { email: payload.email, role: payload.role, name: fallback } });
+      const profileName = await fetchProfileName(token);
+      if (profileName) {
+        set((state) => ({ user: state.user ? { ...state.user, name: profileName } : state.user }));
+      }
       return true;
     } catch {
       return false;
@@ -44,7 +62,12 @@ export const useAuthStore = create<AuthState>((set) => ({
       const token = data.access_token;
       localStorage.setItem("token", token);
       const payload = JSON.parse(atob(token.split(".")[1]));
-      set({ token, user: { email: payload.email, role: payload.role, name: payload.email.split("@")[0] } });
+      const fallback = name || payload.email.split("@")[0];
+      set({ token, user: { email: payload.email, role: payload.role, name: fallback } });
+      const profileName = await fetchProfileName(token);
+      if (profileName) {
+        set((state) => ({ user: state.user ? { ...state.user, name: profileName } : state.user }));
+      }
       return true;
     } catch {
       return false;
@@ -53,13 +76,20 @@ export const useAuthStore = create<AuthState>((set) => ({
   logout: () => {
     localStorage.removeItem("token");
     set({ token: null, user: null });
+    window.location.href = "/";
   },
   loadToken: () => {
     const token = localStorage.getItem("token");
     if (token) {
       try {
         const payload = JSON.parse(atob(token.split(".")[1]));
-        set({ token, user: { email: payload.email, role: payload.role, name: payload.email.split("@")[0] } });
+        const fallback = payload.email.split("@")[0];
+        set({ token, user: { email: payload.email, role: payload.role, name: fallback } });
+        fetchProfileName(token).then((profileName) => {
+          if (profileName) {
+            set((state) => ({ user: state.user ? { ...state.user, name: profileName } : state.user }));
+          }
+        });
       } catch {
         localStorage.removeItem("token");
       }

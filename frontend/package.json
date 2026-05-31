@@ -2,13 +2,6 @@
   "name": "frontend",
   "version": "0.1.0",
   "private": true,
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "sharp",
-      "unrs-resolver",
-      "msw"
-    ]
-  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -20,6 +13,7 @@
     "@ai-sdk/react": "^3.0.191",
     "@base-ui/react": "^1.5.0",
     "@hookform/resolvers": "^5.2.2",
+    "@tailwindcss/typography": "^0.5.19",
     "@tanstack/react-query": "^5.100.11",
     "@tanstack/react-table": "^8.21.3",
     "ai": "^6.0.189",
@@ -31,6 +25,7 @@
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "react-hook-form": "^7.76.0",
+    "react-markdown": "^10.1.0",
     "reactflow": "^11.11.4",
     "recharts": "^3.8.1",
     "shadcn": "^4.8.0",

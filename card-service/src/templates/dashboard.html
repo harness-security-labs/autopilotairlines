@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}Dashboard - Card Service Audit{% endblock %}
+{% block content %}
+<div class="stats">
+    <div class="stat">
+        <div class="stat-label">Total Cards</div>
+        <div class="stat-value">{{ total_cards }}</div>
+    </div>
+    <div class="stat">
+        <div class="stat-label">Total Transactions</div>
+        <div class="stat-value">{{ total_transactions }}</div>
+    </div>
+    <div class="stat">
+        <div class="stat-label">Total Charges</div>
+        <div class="stat-value amount-negative">${{ "%.2f"|format(total_charges) }}</div>
+    </div>
+    <div class="stat">
+        <div class="stat-label">Total Refunds</div>
+        <div class="stat-value amount-positive">${{ "%.2f"|format(total_refunds) }}</div>
+    </div>
+</div>
+
+<div class="card">
+    <h2>Recent Transactions</h2>
+    {% if recent_transactions %}
+    <table>
+        <thead>
+            <tr>
+                <th>Time</th>
+                <th>Card</th>
+                <th>Type</th>
+                <th>Amount</th>
+                <th>Status</th>
+                <th>Merchant</th>
+                <th>Reference</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for txn in recent_transactions %}
+            <tr>
+                <td>{{ txn.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                <td><a class="link" href="/audit/cards/{{ txn.card_id }}">{{ txn.card_brand }} ...{{ txn.card_last_four }}</a></td>
+                <td><span class="badge badge-{{ txn.transaction_type }}">{{ txn.transaction_type }}</span></td>
+                <td class="{% if txn.transaction_type == 'charge' %}amount-negative{% else %}amount-positive{% endif %}">${{ "%.2f"|format(txn.amount) }}</td>
+                <td><span class="badge badge-{{ txn.status }}">{{ txn.status }}</span></td>
+                <td>{{ txn.merchant }}</td>
+                <td>{{ txn.reference_id or '-' }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div class="empty">No transactions found</div>
+    {% endif %}
+</div>
+{% endblock %}

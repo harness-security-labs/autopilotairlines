@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}Card ...{{ card.card_last_four }} - Card Service Audit{% endblock %}
+{% block content %}
+<div class="stats">
+    <div class="stat">
+        <div class="stat-label">Card</div>
+        <div class="stat-value">{{ card.card_brand | upper }} ...{{ card.card_last_four }}</div>
+    </div>
+    <div class="stat">
+        <div class="stat-label">Balance</div>
+        <div class="stat-value">${{ "%.2f"|format(card.balance) }}</div>
+    </div>
+    <div class="stat">
+        <div class="stat-label">Available</div>
+        <div class="stat-value">${{ "%.2f"|format(card.balance - card.hold_amount) }}</div>
+    </div>
+    <div class="stat">
+        <div class="stat-label">Status</div>
+        <div class="stat-value">{{ card.status }}</div>
+    </div>
+</div>
+
+<div class="card" style="margin-bottom:1rem;">
+    <h2>Card Details</h2>
+    <table>
+        <tr><th style="width:150px;">User ID</th><td style="font-family:monospace;font-size:0.8rem;">{{ card.user_id }}</td></tr>
+        <tr><th>Label</th><td>{{ card.label }}</td></tr>
+        <tr><th>Card Number</th><td style="font-family:monospace;">{{ card.card_number }}</td></tr>
+        <tr><th>Expiry</th><td>{{ "%02d"|format(card.expiry_month) }}/{{ card.expiry_year }}</td></tr>
+        <tr><th>Currency</th><td>{{ card.currency }}</td></tr>
+        <tr><th>Hold Amount</th><td>${{ "%.2f"|format(card.hold_amount) }}</td></tr>
+        <tr><th>Default</th><td>{{ "Yes" if card.is_default else "No" }}</td></tr>
+        <tr><th>Created</th><td>{{ card.created_at.strftime('%Y-%m-%d %H:%M:%S UTC') }}</td></tr>
+    </table>
+</div>
+
+<div class="card">
+    <h2>Transaction History ({{ transactions|length }})</h2>
+    {% if transactions %}
+    <table>
+        <thead>
+            <tr>
+                <th>Time</th>
+                <th>Type</th>
+                <th>Amount</th>
+                <th>Balance Before</th>
+                <th>Balance After</th>
+                <th>Status</th>
+                <th>Merchant</th>
+                <th>Description</th>
+                <th>Auth Code</th>
+                <th>Reference</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for txn in transactions %}
+            <tr>
+                <td>{{ txn.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                <td><span class="badge badge-{{ txn.transaction_type }}">{{ txn.transaction_type }}</span></td>
+                <td class="{% if txn.transaction_type == 'charge' %}amount-negative{% else %}amount-positive{% endif %}">${{ "%.2f"|format(txn.amount) }}</td>
+                <td>${{ "%.2f"|format(txn.balance_before) }}</td>
+                <td>${{ "%.2f"|format(txn.balance_after) }}</td>
+                <td><span class="badge badge-{{ txn.status }}">{{ txn.status }}</span></td>
+                <td>{{ txn.merchant }}</td>
+                <td>{{ txn.description or '-' }}</td>
+                <td style="font-family:monospace;font-size:0.75rem;">{{ txn.auth_code or '-' }}</td>
+                <td>{{ txn.reference_id or '-' }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div class="empty">No transactions found</div>
+    {% endif %}
+</div>
+{% endblock %}

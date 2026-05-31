@@ -81,6 +81,18 @@ CREATE TABLE IF NOT EXISTS payments (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS payment_methods (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID REFERENCES users(id),
+    label VARCHAR(100) NOT NULL,
+    card_last_four VARCHAR(4) NOT NULL,
+    card_brand VARCHAR(20) NOT NULL,
+    expiry_month INTEGER NOT NULL,
+    expiry_year INTEGER NOT NULL,
+    is_default BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS loyalty_accounts (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     user_id UUID REFERENCES users(id) UNIQUE,

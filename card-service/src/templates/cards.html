@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Cards - Card Service Audit{% endblock %}
+{% block content %}
+<div class="card">
+    <h2>All Cards</h2>
+    {% if cards %}
+    <table>
+        <thead>
+            <tr>
+                <th>Card</th>
+                <th>User ID</th>
+                <th>Brand</th>
+                <th>Balance</th>
+                <th>Hold</th>
+                <th>Available</th>
+                <th>Status</th>
+                <th>Default</th>
+                <th>Created</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for card in cards %}
+            <tr>
+                <td><a class="link" href="/audit/cards/{{ card.id }}">...{{ card.card_last_four }}</a></td>
+                <td style="font-size:0.7rem; font-family:monospace;">{{ card.user_id }}</td>
+                <td>{{ card.card_brand }}</td>
+                <td>${{ "%.2f"|format(card.balance) }}</td>
+                <td>${{ "%.2f"|format(card.hold_amount) }}</td>
+                <td>${{ "%.2f"|format(card.balance - card.hold_amount) }}</td>
+                <td><span class="badge badge-{{ card.status }}">{{ card.status }}</span></td>
+                <td>{{ "Yes" if card.is_default else "" }}</td>
+                <td>{{ card.created_at.strftime('%Y-%m-%d') }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div class="empty">No cards found</div>
+    {% endif %}
+</div>
+{% endblock %}

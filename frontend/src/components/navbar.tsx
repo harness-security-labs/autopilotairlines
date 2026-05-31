@@ -1,9 +1,18 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useEffect } from "react";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuLabel,
+  DropdownMenuGroup,
+} from "@/components/ui/dropdown-menu";
 import { useAuthStore } from "@/lib/store";
 
 export function Navbar() {
@@ -17,6 +26,8 @@ export function Navbar() {
   }, [loadToken]);
 
   const isAdmin = user?.role === "admin";
+
+  const router = useRouter();
 
   const navItems = [
     { href: "/", label: "Flights" },
@@ -65,17 +76,24 @@ export function Navbar() {
           </div>
           <div className="flex items-center gap-3">
             {user ? (
-              <>
-                <Link href="/profile" className="hidden sm:flex items-center gap-2 hover:opacity-80 transition-opacity">
+              <DropdownMenu>
+                <DropdownMenuTrigger className="flex items-center gap-2 cursor-pointer hover:opacity-80 transition-opacity outline-none">
                   <div className="w-7 h-7 rounded-full bg-blue-600 flex items-center justify-center text-[10px] font-semibold text-white">
                     {user.name?.charAt(0).toUpperCase() || user.email.charAt(0).toUpperCase()}
                   </div>
-                  <span className="text-sm text-muted-foreground">{user.email}</span>
-                </Link>
-                <Button variant="outline" size="sm" onClick={logout}>
-                  Sign Out
-                </Button>
-              </>
+                  <span className="hidden sm:inline text-sm text-muted-foreground">{user.name || user.email}</span>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" sideOffset={8} className="bg-white dark:bg-slate-900 border border-border shadow-lg">
+                  <DropdownMenuGroup>
+                    <DropdownMenuLabel className="font-normal text-xs text-muted-foreground">{user.email}</DropdownMenuLabel>
+                  </DropdownMenuGroup>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={() => router.push("/profile")}>Profile</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => router.push("/payments")}>Payments</DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={logout}>Sign Out</DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             ) : (
               <Link href="/login">
                 <Button size="sm">Sign In</Button>

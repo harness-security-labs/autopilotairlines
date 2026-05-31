@@ -9,8 +9,10 @@ services:
       POSTGRES_PASSWORD: autopilot
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./infrastructure/postgres/00-create-databases.sh:/docker-entrypoint-initdb.d/00-create-databases.sh
       - ./infrastructure/postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql
       - ./infrastructure/postgres/seed.sql:/docker-entrypoint-initdb.d/02-seed.sql
+      - ./card-service/infrastructure/init.sql:/docker-entrypoint-initdb.d/03-cardservice-init.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U autopilot"]
       interval: 5s
@@ -24,16 +26,30 @@ services:
     volumes:
       - redis_data:/data
 
+  card-service:
+    build: ./card-service
+    ports:
+      - "8002:8002"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://autopilot:autopilot@postgres:5432/cardservice
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   backend:
     build: ./backend
     ports:
       - "8000:8000"
     env_file:
       - .env.dev
+    environment:
+      CARD_SERVICE_URL: http://card-service:8002
     depends_on:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_started
+      card-service:
         condition: service_started
     volumes:
       - ./backend/src:/app/src

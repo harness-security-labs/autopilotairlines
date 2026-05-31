@@ -119,20 +119,25 @@ export default function LoginPage() {
         <div className="mt-4 p-4 rounded-xl bg-muted/50 border border-border">
           <p className="text-xs font-medium text-muted-foreground mb-2 text-center">Demo accounts</p>
           <div className="grid grid-cols-2 gap-2">
-            <button
-              onClick={() => fillDemo("john@example.com", "password123")}
-              className="text-xs text-left px-3 py-2 rounded-md bg-background border border-border hover:border-blue-300 transition-colors"
-            >
-              <span className="font-medium block">Traveler</span>
-              <span className="text-muted-foreground">john@example.com</span>
-            </button>
-            <button
-              onClick={() => fillDemo("admin@autopilot.com", "password123")}
-              className="text-xs text-left px-3 py-2 rounded-md bg-background border border-border hover:border-blue-300 transition-colors"
-            >
-              <span className="font-medium block">Admin</span>
-              <span className="text-muted-foreground">admin@autopilot.com</span>
-            </button>
+            {[
+              { label: "Gold Member", email: "john@example.com" },
+              { label: "Admin", email: "admin@autopilot.com" },
+              { label: "Platinum Elite", email: "jane@example.com" },
+              { label: "Corporate Travel", email: "bob@corporate.com" },
+              { label: "Bronze Member", email: "alice@startup.io" },
+              { label: "Gold Frequent", email: "charlie@travel.net" },
+              { label: "Corporate Platinum", email: "diana@corp.co" },
+              { label: "Bronze Casual", email: "eve@security.org" },
+            ].map((demo) => (
+              <button
+                key={demo.email}
+                onClick={() => fillDemo(demo.email, "password123")}
+                className="text-xs text-left px-3 py-2 rounded-md bg-background border border-border hover:border-blue-300 transition-colors"
+              >
+                <span className="font-medium block">{demo.label}</span>
+                <span className="text-muted-foreground">{demo.email}</span>
+              </button>
+            ))}
           </div>
         </div>
       </div>

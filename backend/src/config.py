@@ -29,9 +29,17 @@ class Settings(BaseSettings):
     cors_allow_origins: str = "*"
     memory_similarity_threshold: float = 0.3
 
+    card_service_url: str = "http://localhost:8002"
+
     openai_api_key: str = ""
     openai_model: str = "gpt-4o"
     openai_base_url: str = "https://api.openai.com/v1"
+
+    aws_region: str = ""
+    aws_access_key_id: str = ""
+    aws_secret_access_key: str = ""
+    aws_session_token: str = ""
+    bedrock_model: str = "us.anthropic.claude-sonnet-4-20250514"
 
     class Config:
         env_file = ".env"

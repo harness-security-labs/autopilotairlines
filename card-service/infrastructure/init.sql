@@ -1,0 +1,90 @@
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+CREATE TABLE IF NOT EXISTS cards (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL,
+    label VARCHAR(100) NOT NULL,
+    card_number VARCHAR(20) NOT NULL,
+    card_last_four VARCHAR(4) NOT NULL,
+    card_brand VARCHAR(20) NOT NULL,
+    cvv VARCHAR(4) NOT NULL,
+    expiry_month INTEGER NOT NULL,
+    expiry_year INTEGER NOT NULL,
+    balance FLOAT NOT NULL DEFAULT 5000.0,
+    hold_amount FLOAT NOT NULL DEFAULT 0.0,
+    currency VARCHAR(10) NOT NULL DEFAULT 'USD',
+    is_default BOOLEAN DEFAULT FALSE,
+    status VARCHAR(20) NOT NULL DEFAULT 'active',
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS card_transactions (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    card_id UUID REFERENCES cards(id) ON DELETE CASCADE,
+    transaction_type VARCHAR(20) NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'pending',
+    amount FLOAT NOT NULL,
+    balance_before FLOAT NOT NULL,
+    balance_after FLOAT NOT NULL,
+    hold_released FLOAT NOT NULL DEFAULT 0.0,
+    reference_id VARCHAR(100),
+    merchant VARCHAR(100) DEFAULT 'AutoPilot Airlines',
+    description VARCHAR(255),
+    auth_code VARCHAR(20),
+    settlement_id UUID,
+    settled_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS settlements (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    card_id UUID REFERENCES cards(id) ON DELETE CASCADE,
+    total_amount FLOAT NOT NULL,
+    transaction_count INTEGER NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'completed',
+    settlement_date DATE NOT NULL DEFAULT CURRENT_DATE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Seed cards
+INSERT INTO cards (id, user_id, label, card_number, card_last_four, card_brand, cvv, expiry_month, expiry_year, balance, hold_amount, currency, is_default, status) VALUES
+('60000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000001', 'Visa ending 0366', '4532015112830366', '0366', 'visa', '737', 12, 2027, 10000.00, 0.0, 'USD', TRUE, 'active'),
+('60000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-000000000001', 'Mastercard ending 0004', '5500000000000004', '0004', 'mastercard', '412', 6, 2026, 2500.00, 0.0, 'USD', FALSE, 'active'),
+('60000000-0000-0000-0000-000000000003', '00000000-0000-0000-0000-000000000002', 'Amex ending 0005', '378282246310005', '0005', 'amex', '5891', 3, 2028, 15000.00, 0.0, 'USD', TRUE, 'active'),
+('60000000-0000-0000-0000-000000000004', '00000000-0000-0000-0000-000000000002', 'Visa ending 4564', '4111111111111111', '1111', 'visa', '224', 9, 2027, 500.00, 0.0, 'USD', FALSE, 'active'),
+('60000000-0000-0000-0000-000000000005', '00000000-0000-0000-0000-000000000003', 'Visa ending 9993', '4012888888881881', '1881', 'visa', '890', 1, 2029, 50000.00, 0.0, 'USD', TRUE, 'active'),
+('60000000-0000-0000-0000-000000000006', '00000000-0000-0000-0000-000000000004', 'RuPay ending 6634', '6062826786276634', '6634', 'rupay', '556', 11, 2026, 3000.00, 0.0, 'USD', TRUE, 'active'),
+('60000000-0000-0000-0000-000000000007', '00000000-0000-0000-0000-000000000005', 'Visa ending 5555', '4917484589895555', '5555', 'visa', '318', 8, 2028, 8000.00, 0.0, 'USD', TRUE, 'active'),
+('60000000-0000-0000-0000-000000000008', '00000000-0000-0000-0000-000000000006', 'Mastercard ending 7777', '5425233430107777', '7777', 'mastercard', '629', 4, 2027, 12000.00, 0.0, 'USD', TRUE, 'active'),
+('60000000-0000-0000-0000-000000000009', '00000000-0000-0000-0000-000000000006', 'Visa ending 6666', '4263982640266666', '6666', 'visa', '451', 10, 2028, 5000.00, 0.0, 'USD', FALSE, 'active'),
+('60000000-0000-0000-0000-000000000010', '00000000-0000-0000-0000-000000000007', 'Amex ending 3344', '371449635393344', '3344', 'amex', '7823', 2, 2029, 20000.00, 0.0, 'USD', TRUE, 'active'),
+('60000000-0000-0000-0000-000000000011', '00000000-0000-0000-0000-000000000007', 'Visa ending 8822', '4539578763538822', '8822', 'visa', '274', 7, 2027, 6000.00, 0.0, 'USD', FALSE, 'active'),
+('60000000-0000-0000-0000-000000000012', '00000000-0000-0000-0000-000000000008', 'Visa ending 4321', '4916338506084321', '4321', 'visa', '583', 5, 2028, 4000.00, 0.0, 'USD', TRUE, 'active'),
+('60000000-0000-0000-0000-000000000013', '00000000-0000-0000-0000-000000000009', 'Mastercard ending 9012', '5168441223639012', '9012', 'mastercard', '947', 12, 2027, 7500.00, 0.0, 'USD', TRUE, 'active'),
+('60000000-0000-0000-0000-000000000014', '00000000-0000-0000-0000-000000000010', 'Visa ending 2468', '4024007171532468', '2468', 'visa', '162', 9, 2028, 15000.00, 0.0, 'USD', TRUE, 'active'),
+('60000000-0000-0000-0000-000000000015', '00000000-0000-0000-0000-000000000010', 'Amex ending 1357', '378734493671357', '1357', 'amex', '4290', 3, 2029, 3500.00, 0.0, 'USD', FALSE, 'active');
+
+-- Seed initial transactions (settled)
+INSERT INTO card_transactions (id, card_id, transaction_type, status, amount, balance_before, balance_after, reference_id, merchant, description, auth_code, settled_at) VALUES
+('70000000-0000-0000-0000-000000000001', '60000000-0000-0000-0000-000000000001', 'topup', 'settled', 10000.00, 0.00, 10000.00, NULL, 'Bank Transfer', 'Initial deposit', 'AUTH001', NOW()),
+('70000000-0000-0000-0000-000000000002', '60000000-0000-0000-0000-000000000002', 'topup', 'settled', 2500.00, 0.00, 2500.00, NULL, 'Bank Transfer', 'Initial deposit', 'AUTH002', NOW()),
+('70000000-0000-0000-0000-000000000003', '60000000-0000-0000-0000-000000000003', 'topup', 'settled', 15000.00, 0.00, 15000.00, NULL, 'Bank Transfer', 'Initial deposit', 'AUTH003', NOW()),
+('70000000-0000-0000-0000-000000000004', '60000000-0000-0000-0000-000000000004', 'topup', 'settled', 500.00, 0.00, 500.00, NULL, 'Bank Transfer', 'Initial deposit', 'AUTH004', NOW()),
+('70000000-0000-0000-0000-000000000005', '60000000-0000-0000-0000-000000000005', 'topup', 'settled', 50000.00, 0.00, 50000.00, NULL, 'Corporate Banking', 'Corporate deposit', 'AUTH005', NOW()),
+('70000000-0000-0000-0000-000000000006', '60000000-0000-0000-0000-000000000006', 'topup', 'settled', 3000.00, 0.00, 3000.00, NULL, 'Bank Transfer', 'Initial deposit', 'AUTH006', NOW()),
+('70000000-0000-0000-0000-000000000007', '60000000-0000-0000-0000-000000000007', 'topup', 'settled', 8000.00, 0.00, 8000.00, NULL, 'Bank Transfer', 'Initial deposit', 'AUTH007', NOW()),
+('70000000-0000-0000-0000-000000000008', '60000000-0000-0000-0000-000000000008', 'topup', 'settled', 12000.00, 0.00, 12000.00, NULL, 'Bank Transfer', 'Initial deposit', 'AUTH008', NOW()),
+('70000000-0000-0000-0000-000000000009', '60000000-0000-0000-0000-000000000009', 'topup', 'settled', 5000.00, 0.00, 5000.00, NULL, 'Bank Transfer', 'Initial deposit', 'AUTH009', NOW()),
+('70000000-0000-0000-0000-000000000010', '60000000-0000-0000-0000-000000000010', 'topup', 'settled', 20000.00, 0.00, 20000.00, NULL, 'Corporate Banking', 'Corporate deposit', 'AUTH010', NOW()),
+('70000000-0000-0000-0000-000000000011', '60000000-0000-0000-0000-000000000011', 'topup', 'settled', 6000.00, 0.00, 6000.00, NULL, 'Bank Transfer', 'Initial deposit', 'AUTH011', NOW()),
+('70000000-0000-0000-0000-000000000012', '60000000-0000-0000-0000-000000000012', 'topup', 'settled', 4000.00, 0.00, 4000.00, NULL, 'Bank Transfer', 'Initial deposit', 'AUTH012', NOW()),
+('70000000-0000-0000-0000-000000000013', '60000000-0000-0000-0000-000000000013', 'topup', 'settled', 7500.00, 0.00, 7500.00, NULL, 'Bank Transfer', 'Initial deposit', 'AUTH013', NOW()),
+('70000000-0000-0000-0000-000000000014', '60000000-0000-0000-0000-000000000014', 'topup', 'settled', 15000.00, 0.00, 15000.00, NULL, 'Bank Transfer', 'Initial deposit', 'AUTH014', NOW()),
+('70000000-0000-0000-0000-000000000015', '60000000-0000-0000-0000-000000000015', 'topup', 'settled', 3500.00, 0.00, 3500.00, NULL, 'Bank Transfer', 'Initial deposit', 'AUTH015', NOW());
+
+-- Seed settlement records
+INSERT INTO settlements (id, card_id, total_amount, transaction_count, status, settlement_date) VALUES
+('80000000-0000-0000-0000-000000000001', '60000000-0000-0000-0000-000000000001', 10000.00, 1, 'completed', CURRENT_DATE),
+('80000000-0000-0000-0000-000000000002', '60000000-0000-0000-0000-000000000003', 15000.00, 1, 'completed', CURRENT_DATE),
+('80000000-0000-0000-0000-000000000003', '60000000-0000-0000-0000-000000000005', 50000.00, 1, 'completed', CURRENT_DATE);

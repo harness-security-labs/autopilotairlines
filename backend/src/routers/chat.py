@@ -24,6 +24,7 @@ class ChatMessage(BaseModel):
 
 class ChatRequest(BaseModel):
     messages: list[ChatMessage]
+    session_id: str | None = None
 
 
 @router.post("")
@@ -36,27 +37,76 @@ async def chat(
     from ..agents.graph import run_agent
 
     user_id = current_user["sub"] if current_user else "anonymous"
-    session_id = str(uuid.uuid4())
+    session_id = body.session_id or str(uuid.uuid4())
+
+    if session_id not in CHAT_SESSIONS:
+        CHAT_SESSIONS[session_id] = {
+            "user_id": user_id,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "message_count": 0,
+            "status": "active",
+            "active_agent": None,
+        }
+
+    session = CHAT_SESSIONS[session_id]
+    session["message_count"] = len(body.messages)
+    active_agent = session.get("active_agent")
 
     history = [{"role": m.role, "content": m.content} for m in body.messages]
 
-    CHAT_SESSIONS[session_id] = {
-        "user_id": user_id,
-        "started_at": datetime.now(timezone.utc).isoformat(),
-        "message_count": len(body.messages),
-        "status": "active",
-    }
-
     async def stream():
-        async for chunk in run_agent(history, user_id, session_id, db):
-            data = {
+        nonlocal active_agent
+        collected = []
+        try:
+            async for chunk in run_agent(history, user_id, session_id, db, active_agent):
+                if chunk.startswith("\n__ACTIVE_AGENT__:"):
+                    agent_name = chunk.split(":", 1)[1]
+                    session["active_agent"] = agent_name
+                    data = {
+                        "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
+                        "object": "chat.completion.chunk",
+                        "created": int(datetime.now(timezone.utc).timestamp()),
+                        "choices": [{"index": 0, "delta": {"content": ""}, "finish_reason": None}],
+                        "session_id": session_id,
+                        "active_agent": agent_name,
+                    }
+                    yield f"data: {json.dumps(data)}\n\n"
+                    continue
+                if chunk.strip() == "__END_SESSION__" or chunk.strip() == "\n__END_SESSION__":
+                    session["active_agent"] = None
+                    data = {
+                        "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
+                        "object": "chat.completion.chunk",
+                        "created": int(datetime.now(timezone.utc).timestamp()),
+                        "choices": [{"index": 0, "delta": {"content": ""}, "finish_reason": None}],
+                        "session_id": session_id,
+                        "active_agent": None,
+                    }
+                    yield f"data: {json.dumps(data)}\n\n"
+                    continue
+
+                collected.append(chunk)
+                data = {
+                    "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
+                    "object": "chat.completion.chunk",
+                    "created": int(datetime.now(timezone.utc).timestamp()),
+                    "choices": [{"index": 0, "delta": {"content": chunk}, "finish_reason": None}],
+                    "session_id": session_id,
+                    "active_agent": session.get("active_agent"),
+                }
+                yield f"data: {json.dumps(data)}\n\n"
+        except Exception as e:
+            error_data = {
                 "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
                 "object": "chat.completion.chunk",
                 "created": int(datetime.now(timezone.utc).timestamp()),
-                "choices": [{"index": 0, "delta": {"content": chunk}, "finish_reason": None}],
+                "choices": [{"index": 0, "delta": {"content": ""}, "finish_reason": "error"}],
+                "error": str(e),
+                "session_id": session_id,
             }
-            yield f"data: {json.dumps(data)}\n\n"
-        CHAT_SESSIONS[session_id]["status"] = "completed"
+            yield f"data: {json.dumps(error_data)}\n\n"
+
+        session["status"] = "completed"
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(stream(), media_type="text/event-stream")
@@ -65,6 +115,14 @@ async def chat(
 @router.get("/sessions")
 async def list_sessions():
     return {"sessions": list(CHAT_SESSIONS.values())[-50:], "total": len(CHAT_SESSIONS)}
+
+
+@router.get("/sessions/{session_id}")
+async def get_session(session_id: str):
+    session = CHAT_SESSIONS.get(session_id)
+    if not session:
+        return {"error": "Session not found"}
+    return session
 
 
 @router.get("/tool-calls")

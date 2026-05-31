@@ -1,0 +1,124 @@
+name: Build, Test & Publish
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+
+env:
+  REGISTRY: ghcr.io
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  test-backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: autopilot
+          POSTGRES_USER: autopilot
+          POSTGRES_PASSWORD: autopilot
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U autopilot"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+    defaults:
+      run:
+        working-directory: ./backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+      - run: uv sync --frozen
+      - run: uv run pytest
+        env:
+          DATABASE_URL: postgresql+asyncpg://autopilot:autopilot@localhost:5432/autopilot
+
+  test-cardservice:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: cardservice
+          POSTGRES_USER: autopilot
+          POSTGRES_PASSWORD: autopilot
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U autopilot"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+    defaults:
+      run:
+        working-directory: ./card-service
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+      - run: uv sync --frozen
+      - run: uv run pytest
+        env:
+          DATABASE_URL: postgresql+asyncpg://autopilot:autopilot@localhost:5432/cardservice
+
+  build-and-push:
+    runs-on: ubuntu-latest
+    needs: [test-backend, test-cardservice]
+    strategy:
+      matrix:
+        include:
+          - service: backend
+            image: ghcr.io/allvapps/autopilotairlines-backend
+            context: ./backend
+          - service: frontend
+            image: ghcr.io/allvapps/autopilotairlines-frontend
+            context: ./frontend
+          - service: card-service
+            image: ghcr.io/allvapps/autopilotairlines-cardservice
+            context: ./card-service
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate version
+        id: version
+        run: |
+          SHA_SHORT=$(echo "${{ github.sha }}" | cut -c1-7)
+          echo "sha_short=$SHA_SHORT" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ${{ matrix.image }}
+          tags: |
+            type=raw,value=dev-{{sha}},enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=dev-latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

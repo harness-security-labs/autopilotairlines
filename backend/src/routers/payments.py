@@ -9,6 +9,7 @@ from ..database import get_db
 from ..models.payment import Payment
 from ..models.loyalty import LoyaltyAccount, LoyaltyTransaction
 from ..middleware.auth import require_auth
+from ..services.card_service import card_service
 
 router = APIRouter(prefix="/api/v1/payments", tags=["payments"])
 
@@ -20,7 +21,11 @@ class PaymentCreate(BaseModel):
     booking_id: str
     amount: float
     method: str = "credit_card"
+    payment_method_id: str | None = None
     card_number: str | None = None
+    cvv: str | None = None
+    expiry_month: int | None = None
+    expiry_year: int | None = None
     points_used: int = 0
 
 
@@ -71,16 +76,44 @@ async def process_payment(
     card_amount = round(body.amount - points_discount, 2)
     method = "points" if card_amount <= 0 else ("points+card" if points_used > 0 else body.method)
 
+    card_last_four = None
+
+    if card_amount > 0 and body.payment_method_id:
+        if not body.cvv or not body.expiry_month or not body.expiry_year:
+            raise HTTPException(status_code=400, detail="CVV and expiry required for card payment")
+        try:
+            await card_service.charge(
+                card_id=body.payment_method_id,
+                amount=card_amount,
+                cvv=body.cvv,
+                expiry_month=body.expiry_month,
+                expiry_year=body.expiry_year,
+                reference_id=body.booking_id,
+                description=f"Payment for booking {body.booking_id}",
+            )
+        except HTTPException as e:
+            if e.status_code == 402:
+                raise HTTPException(status_code=402, detail=e.detail)
+            raise
+        cards = await card_service.list_cards(current_user["sub"])
+        for c in cards:
+            if c["id"] == body.payment_method_id:
+                card_last_four = c["card_last_four"]
+                break
+    elif card_amount > 0 and body.card_number:
+        card_last_four = body.card_number[-4:]
+
+    transaction_id = f"txn_{uuid.uuid4().hex[:16]}"
+
     payment = Payment(
         booking_id=uuid.UUID(body.booking_id),
         amount=body.amount,
         method=method,
-        transaction_id=f"txn_{uuid.uuid4().hex[:16]}",
-        card_last_four=body.card_number[-4:] if body.card_number and card_amount > 0 else None,
+        transaction_id=transaction_id,
+        card_last_four=card_last_four,
     )
     db.add(payment)
 
-    # Earn points on card-paid amount
     points_earned = int(card_amount * POINTS_PER_DOLLAR)
     points_remaining = None
     if points_earned > 0 or points_used > 0:

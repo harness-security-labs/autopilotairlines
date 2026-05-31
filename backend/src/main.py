@@ -7,15 +7,40 @@ from fastapi.responses import JSONResponse
 
 from .config import settings
 from .database import engine, Base
-from .routers import auth, flights, bookings, users, payments, loyalty, refunds, chat, admin, memory, checkin, baggage
+from .routers import auth, flights, bookings, users, payments, loyalty, refunds, chat, admin, memory, checkin, baggage, payment_methods, reports
 from .mcp.server import router as mcp_router
 from .services.flight_scheduler import run_scheduler
+
+
+async def _sync_schema(conn):
+    """Add any columns that exist in models but not in the database."""
+    from sqlalchemy import inspect, text
+
+    def _do_sync(sync_conn):
+        inspector = inspect(sync_conn)
+        for table in Base.metadata.sorted_tables:
+            if not inspector.has_table(table.name):
+                continue
+            existing = {c["name"] for c in inspector.get_columns(table.name)}
+            for col in table.columns:
+                if col.name not in existing:
+                    col_type = col.type.compile(sync_conn.dialect)
+                    nullable = "NULL" if col.nullable else "NOT NULL"
+                    default = ""
+                    if col.server_default:
+                        default = f" DEFAULT {col.server_default.arg}"
+                    sync_conn.execute(text(
+                        f'ALTER TABLE {table.name} ADD COLUMN {col.name} {col_type} {nullable}{default}'
+                    ))
+
+    await conn.run_sync(_do_sync)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await _sync_schema(conn)
     scheduler_task = asyncio.create_task(run_scheduler())
     yield
     scheduler_task.cancel()
@@ -49,6 +74,8 @@ app.include_router(admin.router)
 app.include_router(memory.router)
 app.include_router(checkin.router)
 app.include_router(baggage.router)
+app.include_router(payment_methods.router)
+app.include_router(reports.router)
 app.include_router(mcp_router)
 
 

@@ -23,5 +23,9 @@ credentials.json
 # Docker
 .docker/
 
+# Python
+__pycache__/
+*.pyc
+
 # Misc
 *.csv

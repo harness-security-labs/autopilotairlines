@@ -113,6 +113,7 @@ async def list_bookings(
 ):
     result = await db.execute(
         select(Booking).where(Booking.user_id == UUID(current_user["sub"]))
+        .order_by(Booking.created_at.desc())
     )
     bookings = result.scalars().all()
     return [
@@ -437,6 +438,106 @@ async def list_available_coupons():
     return {"offers": offers, "date": today.isoformat()}
 
 
+class ConnectingFlightRequest(BaseModel):
+    pnr: str
+    destination: str
+    preferred_time: str | None = None
+
+
+@router.post("/connect")
+async def book_connecting_flight(
+    body: ConnectingFlightRequest,
+    current_user: dict = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    from .flights import flight_operates_on, project_flight_to_date, compute_dynamic_price, count_bookings_for_flight_date
+
+    result = await db.execute(
+        select(Booking).where(
+            Booking.pnr == body.pnr.upper(),
+            Booking.user_id == UUID(current_user["sub"]),
+        )
+    )
+    existing_booking = result.scalar_one_or_none()
+    if not existing_booking:
+        raise HTTPException(status_code=404, detail="Booking not found")
+
+    if existing_booking.status == "cancelled":
+        raise HTTPException(status_code=400, detail="Cannot connect to a cancelled booking")
+
+    flight_result = await db.execute(select(Flight).where(Flight.id == existing_booking.flight_id))
+    first_leg = flight_result.scalar_one_or_none()
+    if not first_leg:
+        raise HTTPException(status_code=404, detail="Original flight not found")
+
+    connection_origin = first_leg.destination
+    travel_date = existing_booking.travel_date or first_leg.departure.date()
+
+    if body.preferred_time and body.preferred_time.lower() == "next_day":
+        travel_date = travel_date + timedelta(days=1)
+
+    dest = body.destination.upper()
+    connecting_flights = await db.execute(
+        select(Flight).where(and_(
+            Flight.origin == connection_origin,
+            Flight.destination == dest,
+        ))
+    )
+    available = connecting_flights.scalars().all()
+    available = [f for f in available if flight_operates_on(f, travel_date)]
+
+    if not available:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No connecting flights from {connection_origin} to {dest} on {travel_date.isoformat()}"
+        )
+
+    best = available[0]
+    booked_count = await count_bookings_for_flight_date(db, best.id, travel_date)
+    price = compute_dynamic_price(best.base_price, booked_count, best.total_seats)
+    dep, arr = project_flight_to_date(best, travel_date)
+
+    new_pnr = generate_pnr()
+    connecting_booking = Booking(
+        user_id=UUID(current_user["sub"]),
+        flight_id=best.id,
+        pnr=new_pnr,
+        passenger_name=existing_booking.passenger_name,
+        passenger_email=existing_booking.passenger_email,
+        cabin_class=existing_booking.cabin_class or "economy",
+        travel_date=travel_date,
+    )
+    db.add(connecting_booking)
+    await db.commit()
+    await db.refresh(connecting_booking)
+
+    return {
+        "itinerary": {
+            "first_leg": {
+                "pnr": existing_booking.pnr,
+                "flight_number": first_leg.flight_number,
+                "origin": first_leg.origin,
+                "destination": first_leg.destination,
+                "passenger_name": existing_booking.passenger_name,
+                "passenger_email": existing_booking.passenger_email,
+                "travel_date": (existing_booking.travel_date or first_leg.departure.date()).isoformat(),
+                "cabin_class": existing_booking.cabin_class or "economy",
+            },
+            "connecting_leg": {
+                "pnr": new_pnr,
+                "flight_number": best.flight_number,
+                "origin": connection_origin,
+                "destination": dest,
+                "departure": dep.isoformat(),
+                "arrival": arr.isoformat(),
+                "travel_date": travel_date.isoformat(),
+                "price": round(price, 2),
+                "cabin_class": existing_booking.cabin_class or "economy",
+            },
+        }
+    }
+
+
 @router.get("/lookup")
 async def lookup_booking(
     pnr: str,
@@ -481,6 +582,133 @@ async def get_booking(
         cabin_class=booking.cabin_class or "economy",
         created_at=booking.created_at.isoformat(),
     )
+
+
+@router.get("/{booking_id}/receipt")
+async def get_booking_receipt(
+    booking_id: str,
+    current_user: dict = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    from ..models.payment import Payment
+    from .baggage import BAGGAGE_RECORDS
+
+    result = await db.execute(select(Booking).where(Booking.id == UUID(booking_id)))
+    booking = result.scalar_one_or_none()
+    if not booking:
+        raise HTTPException(status_code=404, detail="Booking not found")
+
+    flight_result = await db.execute(select(Flight).where(Flight.id == booking.flight_id))
+    flight = flight_result.scalar_one_or_none()
+
+    payment_result = await db.execute(
+        select(Payment).where(Payment.booking_id == booking.id)
+    )
+    payment = payment_result.scalar_one_or_none()
+
+    bags = BAGGAGE_RECORDS.get(booking_id, [])
+    baggage_total = sum(b["fee"] for b in bags)
+
+    cabin_multiplier = {"economy": 1.0, "premium_economy": 1.5, "business": 2.5}
+    base_fare = flight.base_price * cabin_multiplier.get(booking.cabin_class or "economy", 1.0) if flight else 0
+    taxes = round(base_fare * 0.12, 2)
+
+    coupon_discount = 0.0
+    if booking.coupon_code and payment:
+        coupon_info = STATIC_COUPONS.get(booking.coupon_code)
+        if not coupon_info:
+            for ac in ADMIN_COUPONS:
+                if ac["code"].upper() == booking.coupon_code.upper():
+                    coupon_info = ac
+                    break
+        if coupon_info:
+            coupon_discount = round((base_fare + taxes) * coupon_info["discount_percent"] / 100, 2)
+
+    subtotal = round(base_fare + taxes, 2)
+    points_value = 0.0
+    points_used = 0
+    if payment and payment.method in ("points", "points+card"):
+        from ..models.loyalty import LoyaltyTransaction
+        txn_result = await db.execute(
+            select(LoyaltyTransaction).where(
+                LoyaltyTransaction.source == f"Booking {booking_id}",
+                LoyaltyTransaction.transaction_type == "payment",
+            )
+        )
+        txn = txn_result.scalar_one_or_none()
+        if txn:
+            points_used = abs(txn.points)
+            points_value = round(points_used * 0.01, 2)
+
+    amount_paid = payment.amount if payment else 0.0
+    points_earned = 0
+    if payment:
+        from ..models.loyalty import LoyaltyTransaction
+        earn_result = await db.execute(
+            select(LoyaltyTransaction).where(
+                LoyaltyTransaction.source == f"Booking {booking_id}",
+                LoyaltyTransaction.transaction_type == "earn",
+            )
+        )
+        earn_txn = earn_result.scalar_one_or_none()
+        if earn_txn:
+            points_earned = earn_txn.points
+        else:
+            points_earned = int((amount_paid - points_value) * 10)
+    else:
+        points_earned = int(subtotal * 10)
+
+    return {
+        "booking": {
+            "id": str(booking.id),
+            "pnr": booking.pnr,
+            "status": booking.status,
+            "passenger_name": booking.passenger_name,
+            "passenger_email": booking.passenger_email,
+            "cabin_class": booking.cabin_class or "economy",
+            "travel_date": booking.travel_date.isoformat() if booking.travel_date else None,
+            "coupon_code": booking.coupon_code,
+            "created_at": booking.created_at.isoformat(),
+        },
+        "flight": {
+            "id": str(flight.id) if flight else None,
+            "flight_number": flight.flight_number if flight else None,
+            "origin": flight.origin if flight else None,
+            "destination": flight.destination if flight else None,
+            "departure": flight.departure.isoformat() if flight else None,
+            "arrival": flight.arrival.isoformat() if flight else None,
+            "aircraft": flight.aircraft if flight else None,
+        },
+        "pricing": {
+            "base_fare": round(base_fare, 2),
+            "taxes": taxes,
+            "subtotal": subtotal,
+            "coupon_code": booking.coupon_code,
+            "coupon_discount": coupon_discount,
+            "baggage_fees": baggage_total,
+            "points_used": points_used,
+            "points_value": points_value,
+            "total": round(subtotal - coupon_discount + baggage_total - points_value, 2),
+            "amount_paid": amount_paid,
+            "points_earned": points_earned,
+        },
+        "payment": {
+            "id": str(payment.id) if payment else None,
+            "method": payment.method if payment else None,
+            "status": payment.status if payment else None,
+            "transaction_id": payment.transaction_id if payment else None,
+            "card_last_four": payment.card_last_four if payment else None,
+            "currency": payment.currency if payment else "USD",
+            "created_at": payment.created_at.isoformat() if payment else None,
+        } if payment else None,
+        "addons": {
+            "baggage": [
+                {"tag_id": b["tag_id"], "bag_type": b["bag_type"], "weight_kg": b["weight_kg"], "fee": b["fee"]}
+                for b in bags
+            ],
+            "baggage_total": baggage_total,
+        },
+    }
 
 
 @router.post("/{booking_id}/cancel")

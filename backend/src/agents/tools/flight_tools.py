@@ -47,13 +47,14 @@ def resolve_iata(code: str) -> str:
 
 @tool
 async def search_flights_tool(origin: str, destination: str, date: str | None = None) -> str:
-    """Search for available flights between two airports. Use IATA codes (DEL, BOM, JFK, LAX, etc.) or city names (Delhi, Mumbai, New York, etc.)."""
+    """Search for available flights between two airports. Use IATA codes (DEL, BOM, JFK, LAX, etc.) or city names (Delhi, Mumbai, New York, etc.).
+    Returns direct and connecting flights with full details including stops and segments."""
     from ...database import async_session
     from ...models.flight import Flight
     from ...models.booking import Booking
     from ...routers.flights import flight_operates_on, project_flight_to_date, compute_dynamic_price, count_bookings_for_flight_date
     from sqlalchemy import select, and_
-    from datetime import datetime
+    from datetime import datetime, timedelta
 
     origin = resolve_iata(origin)
     destination = resolve_iata(destination)
@@ -91,26 +92,109 @@ async def search_flights_tool(origin: str, destination: str, date: str | None = 
                 duration_str = f"{duration_min // 60}h {duration_min % 60}m"
                 results.append(
                     f"[{f.id}] {f.flight_number}: {f.origin} → {f.destination} | "
-                    f"{dep.strftime('%Y-%m-%d %H:%M')} → {arr.strftime('%H:%M')} ({duration_str}) | "
-                    f"Aircraft: {f.aircraft} | "
-                    f"Price: ${price:.2f} (base ${f.base_price:.2f}) | "
+                    f"Dep: {dep.strftime('%Y-%m-%d %H:%M')} → Arr: {arr.strftime('%H:%M')} ({duration_str}) | "
+                    f"Stops: 0 (Direct) | "
+                    f"Price: ${price:.2f} | "
                     f"Seats: {available}/{f.total_seats}"
                 )
+
+            if origin and destination:
+                all_scheduled = await db.execute(select(Flight).where(Flight.status != "cancelled"))
+                all_on_date = [f for f in all_scheduled.scalars().all() if flight_operates_on(f, target)]
+
+                by_origin: dict[str, list] = {}
+                for f in all_on_date:
+                    by_origin.setdefault(f.origin, []).append(f)
+
+                def _valid_connection(arr_time, dep_time):
+                    return timedelta(minutes=45) < (dep_time - arr_time) < timedelta(hours=24)
+
+                for f1 in by_origin.get(origin.upper(), []):
+                    if f1.destination == destination.upper():
+                        continue
+                    for f2 in by_origin.get(f1.destination, []):
+                        if f2.destination != destination.upper():
+                            continue
+                        dep1, arr1 = project_flight_to_date(f1, target)
+                        dep2, arr2 = project_flight_to_date(f2, target)
+                        if not _valid_connection(arr1, dep2):
+                            continue
+                        b1 = await count_bookings_for_flight_date(db, f1.id, target)
+                        b2 = await count_bookings_for_flight_date(db, f2.id, target)
+                        p1 = compute_dynamic_price(f1.base_price, b1, f1.total_seats)
+                        p2 = compute_dynamic_price(f2.base_price, b2, f2.total_seats)
+                        a1 = max(0, f1.total_seats - b1)
+                        a2 = max(0, f2.total_seats - b2)
+                        total_price = round(p1 + p2, 2)
+                        total_duration = int((arr2 - dep1).total_seconds() / 60)
+                        layover = int((dep2 - arr1).total_seconds() / 60)
+                        results.append(
+                            f"[{f1.id}_{f2.id}] {f1.flight_number}+{f2.flight_number}: {f1.origin} → {f2.destination} | "
+                            f"Dep: {dep1.strftime('%Y-%m-%d %H:%M')} → Arr: {arr2.strftime('%H:%M')} ({total_duration // 60}h {total_duration % 60}m) | "
+                            f"Stops: 1 via {f1.destination} (layover {layover // 60}h {layover % 60}m) | "
+                            f"  Seg1: {f1.flight_number} {f1.origin}→{f1.destination} {dep1.strftime('%H:%M')}→{arr1.strftime('%H:%M')} | "
+                            f"  Seg2: {f2.flight_number} {f2.origin}→{f2.destination} {dep2.strftime('%H:%M')}→{arr2.strftime('%H:%M')} | "
+                            f"Price: ${total_price:.2f} | "
+                            f"Seats: {min(a1, a2)}"
+                        )
+
+                if len(results) < 10:
+                    for f1 in by_origin.get(origin.upper(), []):
+                        if f1.destination == destination.upper():
+                            continue
+                        for f2 in by_origin.get(f1.destination, []):
+                            if f2.destination == destination.upper() or f2.destination == origin.upper():
+                                continue
+                            dep1, arr1 = project_flight_to_date(f1, target)
+                            dep2, arr2 = project_flight_to_date(f2, target)
+                            if not _valid_connection(arr1, dep2):
+                                continue
+                            for f3 in by_origin.get(f2.destination, []):
+                                if f3.destination != destination.upper():
+                                    continue
+                                dep3, arr3 = project_flight_to_date(f3, target)
+                                if not _valid_connection(arr2, dep3):
+                                    continue
+                                b1 = await count_bookings_for_flight_date(db, f1.id, target)
+                                b2 = await count_bookings_for_flight_date(db, f2.id, target)
+                                b3 = await count_bookings_for_flight_date(db, f3.id, target)
+                                p1 = compute_dynamic_price(f1.base_price, b1, f1.total_seats)
+                                p2 = compute_dynamic_price(f2.base_price, b2, f2.total_seats)
+                                p3 = compute_dynamic_price(f3.base_price, b3, f3.total_seats)
+                                a1 = max(0, f1.total_seats - b1)
+                                a2 = max(0, f2.total_seats - b2)
+                                a3 = max(0, f3.total_seats - b3)
+                                total_price = round(p1 + p2 + p3, 2)
+                                total_duration = int((arr3 - dep1).total_seconds() / 60)
+                                lay1 = int((dep2 - arr1).total_seconds() / 60)
+                                lay2 = int((dep3 - arr2).total_seconds() / 60)
+                                results.append(
+                                    f"[{f1.id}_{f2.id}_{f3.id}] {f1.flight_number}+{f2.flight_number}+{f3.flight_number}: {f1.origin} → {f3.destination} | "
+                                    f"Dep: {dep1.strftime('%Y-%m-%d %H:%M')} → Arr: {arr3.strftime('%H:%M')} ({total_duration // 60}h {total_duration % 60}m) | "
+                                    f"Stops: 2 via {f1.destination}, {f2.destination} (layovers {lay1 // 60}h {lay1 % 60}m + {lay2 // 60}h {lay2 % 60}m) | "
+                                    f"  Seg1: {f1.flight_number} {f1.origin}→{f1.destination} {dep1.strftime('%H:%M')}→{arr1.strftime('%H:%M')} | "
+                                    f"  Seg2: {f2.flight_number} {f2.origin}→{f2.destination} {dep2.strftime('%H:%M')}→{arr2.strftime('%H:%M')} | "
+                                    f"  Seg3: {f3.flight_number} {f3.origin}→{f3.destination} {dep3.strftime('%H:%M')}→{arr3.strftime('%H:%M')} | "
+                                    f"Price: ${total_price:.2f} | "
+                                    f"Seats: {min(a1, a2, a3)}"
+                                )
+
+            results.sort(key=lambda r: ("Stops: 0" not in r, r))
         else:
             results = []
             for f in flights[:10]:
                 results.append(
                     f"[{f.id}] {f.flight_number}: {f.origin} → {f.destination} | "
-                    f"Departs: {f.departure.strftime('%H:%M')} | "
-                    f"Aircraft: {f.aircraft} | "
-                    f"Price: ${f.base_price:.2f} | Seats: {f.available_seats} | "
+                    f"Dep: {f.departure.strftime('%H:%M')} → Arr: {f.arrival.strftime('%H:%M')} | "
+                    f"Stops: 0 (Direct) | "
+                    f"Price: ${f.base_price:.2f} | Seats: {f.available_seats}/{f.total_seats} | "
                     f"Schedule: {f.days_of_week or 'one-off'}"
                 )
 
     if not results:
         return "No flights found for this route."
 
-    return "\n".join(results)
+    return "\n".join(results[:15])
 
 
 @tool

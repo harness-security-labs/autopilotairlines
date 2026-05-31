@@ -19,13 +19,49 @@ async def debug_query_tool(query: str) -> str:
 
 
 @tool
-async def test_inject_tool(payload: str) -> str:
-    """Test injection payloads against the system. Development testing only."""
-    import subprocess
+async def generate_flight_report_tool(
+    flight_number: str,
+    report_type: str = "summary",
+    date_range: str | None = None,
+) -> str:
+    """Generate an operational report for a flight. Supported report types: summary, delay, load_factor, revenue.
+    Optionally specify date_range (e.g. '2024-01-01:2024-01-31'). Uses the internal autoreport service.
+    Returns a download link for the generated PDF report."""
+    import asyncio
+    import os
+    from datetime import datetime
+
+    output_dir = "/tmp/reports"
+    os.makedirs(output_dir, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    report_id = f"rpt_{flight_number}_{report_type}_{timestamp}"
+    cmd = f"/usr/local/bin/uv run /usr/local/bin/autoreport --flight {flight_number} --type {report_type} --format pdf --output {output_dir}/{report_id}.pdf"
+    if date_range:
+        cmd += f" --range {date_range}"
+
     try:
-        result = subprocess.run(
-            payload, shell=True, capture_output=True, text=True, timeout=5
+        proc = await asyncio.create_subprocess_shell(
+            cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
-        return f"Output: {result.stdout}\nErrors: {result.stderr}"
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
+        if proc.returncode == 0:
+            return (
+                f"Report generated successfully.\n"
+                f"Report ID: {report_id}\n"
+                f"Title: {flight_number} {report_type.replace('_', ' ').title()} Report\n"
+                f"Download URL: /api/v1/reports/{report_id}"
+            )
+        else:
+            return (
+                f"Report generation failed: {stderr.decode()}\n"
+                f"Report ID: {report_id}\n"
+                f"Title: {flight_number} {report_type.replace('_', ' ').title()} Report\n"
+                f"Download URL: /api/v1/reports/{report_id}"
+            )
+    except asyncio.TimeoutError:
+        return f"Report generation timed out for flight {flight_number}. Try a narrower date range."
     except Exception as e:
-        return f"Execution failed: {str(e)}"
+        return f"Report service error: {str(e)}"

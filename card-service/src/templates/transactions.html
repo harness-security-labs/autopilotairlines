@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}Transactions - Card Service Audit{% endblock %}
+{% block content %}
+<div class="card">
+    <h2>All Transactions</h2>
+    <form class="filter-bar" method="get" action="/audit/transactions">
+        <select name="type">
+            <option value="">All Types</option>
+            <option value="charge" {% if filter_type == 'charge' %}selected{% endif %}>Charges</option>
+            <option value="refund" {% if filter_type == 'refund' %}selected{% endif %}>Refunds</option>
+            <option value="topup" {% if filter_type == 'topup' %}selected{% endif %}>Top-ups</option>
+        </select>
+        <select name="status">
+            <option value="">All Statuses</option>
+            <option value="settled" {% if filter_status == 'settled' %}selected{% endif %}>Settled</option>
+            <option value="declined" {% if filter_status == 'declined' %}selected{% endif %}>Declined</option>
+            <option value="pending" {% if filter_status == 'pending' %}selected{% endif %}>Pending</option>
+        </select>
+        <button type="submit">Filter</button>
+    </form>
+    {% if transactions %}
+    <table>
+        <thead>
+            <tr>
+                <th>Time</th>
+                <th>Card</th>
+                <th>Type</th>
+                <th>Amount</th>
+                <th>Before</th>
+                <th>After</th>
+                <th>Status</th>
+                <th>Merchant</th>
+                <th>Description</th>
+                <th>Reference</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for txn in transactions %}
+            <tr>
+                <td>{{ txn.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                <td><a class="link" href="/audit/cards/{{ txn.card_id }}">...{{ txn.card_last_four }}</a></td>
+                <td><span class="badge badge-{{ txn.transaction_type }}">{{ txn.transaction_type }}</span></td>
+                <td class="{% if txn.transaction_type == 'charge' %}amount-negative{% else %}amount-positive{% endif %}">${{ "%.2f"|format(txn.amount) }}</td>
+                <td>${{ "%.2f"|format(txn.balance_before) }}</td>
+                <td>${{ "%.2f"|format(txn.balance_after) }}</td>
+                <td><span class="badge badge-{{ txn.status }}">{{ txn.status }}</span></td>
+                <td>{{ txn.merchant }}</td>
+                <td>{{ txn.description or '-' }}</td>
+                <td>{{ txn.reference_id or '-' }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div class="empty">No transactions match your filter</div>
+    {% endif %}
+</div>
+{% endblock %}
