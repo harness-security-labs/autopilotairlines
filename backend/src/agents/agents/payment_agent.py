@@ -4,7 +4,7 @@ from datetime import date
 from ..llm import get_llm
 from ..prompts import PAYMENT_AGENT_PROMPT
 from ..tools.payment_tools import get_payment_methods_tool, process_payment_tool, process_refund_tool, get_refund_quote_tool
-from ..tools.selfservice_tools import validate_coupon_tool, get_my_loyalty_tool
+from ..tools.selfservice_tools import validate_coupon_tool, get_my_loyalty_tool, get_booking_details_tool, get_my_bookings_tool, get_refund_history_tool
 from ..tools.loyalty_tools import check_loyalty_points_tool
 
 TOOLS = [
@@ -12,9 +12,12 @@ TOOLS = [
     get_refund_quote_tool,
     process_refund_tool,
     get_payment_methods_tool,
+    get_my_bookings_tool,
+    get_booking_details_tool,
     validate_coupon_tool,
     check_loyalty_points_tool,
     get_my_loyalty_tool,
+    get_refund_history_tool,
 ]
 
 

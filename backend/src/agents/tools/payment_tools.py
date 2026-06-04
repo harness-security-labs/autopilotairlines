@@ -1,18 +1,20 @@
 from langchain_core.tools import tool
 
 from ..context import get_current_user_id
+from ...constants import DOLLARS_PER_POINT, POINTS_PER_DOLLAR, compute_tier
 
 
 @tool
-async def get_payment_methods_tool() -> str:
-    """Get the current user's saved payment methods. Returns card brand, last four digits, expiry, and whether it's the default method."""
+async def get_payment_methods_tool(user_id: str | None = None) -> str:
+    """Get saved payment methods for a user. If user_id is not provided, returns the current user's methods.
+    Pass a user_id to look up another user's payment methods (admin/service use)."""
     from ...services.card_service import card_service
 
-    user_id = get_current_user_id()
-    cards = await card_service.list_cards(user_id)
+    target_user_id = user_id or get_current_user_id()
+    cards = await card_service.list_cards(target_user_id)
 
     if not cards:
-        return "No saved payment methods found. Ask the user to add a payment method via the app or API (POST /api/v1/payment-methods)."
+        return "No saved payment methods found."
 
     lines = [f"Saved payment methods ({len(cards)}):"]
     for c in cards:
@@ -39,13 +41,12 @@ async def process_payment_tool(
     from ...models.booking import Booking
     from ...models.payment import Payment
     from ...models.loyalty import LoyaltyAccount, LoyaltyTransaction
+    from ...models.user import User
     from ...services.card_service import card_service
     from sqlalchemy import select
     from uuid import UUID
     import uuid as uuid_mod
 
-    DOLLARS_PER_POINT = 0.01
-    POINTS_PER_DOLLAR = 10
     user_id = get_current_user_id()
 
     async with async_session() as db:
@@ -118,19 +119,42 @@ async def process_payment_tool(
         )
         db.add(payment)
 
-        points_earned = int(card_amount * POINTS_PER_DOLLAR)
-        if points_earned > 0:
-            if not account:
-                acct_result = await db.execute(
-                    select(LoyaltyAccount).where(LoyaltyAccount.user_id == UUID(user_id))
-                )
-                account = acct_result.scalar_one_or_none()
-            if account:
-                account.points += points_earned
-                db.add(LoyaltyTransaction(
-                    account_id=account.id, points=points_earned,
-                    transaction_type="earn", source=f"Booking {booking.pnr}",
+        if not account:
+            acct_result = await db.execute(
+                select(LoyaltyAccount).where(LoyaltyAccount.user_id == UUID(user_id))
+            )
+            account = acct_result.scalar_one_or_none()
+
+        tier = account.tier if account else "bronze"
+        earn_rate = POINTS_PER_DOLLAR.get(tier, 1)
+        points_earned = int(card_amount * earn_rate)
+
+        if points_earned > 0 and account:
+            account.points += points_earned
+            db.add(LoyaltyTransaction(
+                account_id=account.id, points=points_earned,
+                transaction_type="earn", source=f"Booking {booking.pnr}",
+            ))
+
+            from datetime import datetime, timedelta, timezone
+            from sqlalchemy import func, and_
+            twelve_months_ago = datetime.now(timezone.utc) - timedelta(days=365)
+            earned_result = await db.execute(
+                select(func.coalesce(func.sum(LoyaltyTransaction.points), 0))
+                .where(and_(
+                    LoyaltyTransaction.account_id == account.id,
+                    LoyaltyTransaction.points > 0,
+                    LoyaltyTransaction.created_at >= twelve_months_ago,
                 ))
+            )
+            total_earned_12m = (earned_result.scalar() or 0) + points_earned
+            new_tier = compute_tier(total_earned_12m)
+            if account.tier != new_tier:
+                account.tier = new_tier
+                user_result = await db.execute(select(User).where(User.id == booking.user_id))
+                user_obj = user_result.scalar_one_or_none()
+                if user_obj:
+                    user_obj.loyalty_tier = new_tier
 
         await db.commit()
 
@@ -218,7 +242,7 @@ async def get_refund_quote_tool(booking_id: str) -> str:
             lines.append(f"Refund to: Card ••••{payment.card_last_four}")
         lines.append(f"Processing time: Immediate credit upon confirmation")
     elif payment and payment.method == "points":
-        points_back = int(refund_amount / 0.01)
+        points_back = int(refund_amount / DOLLARS_PER_POINT)
         lines.append(f"Refund to: Loyalty points ({points_back:,} points)")
         lines.append(f"Processing time: Immediate")
     else:
@@ -236,7 +260,7 @@ async def process_refund_tool(booking_id: str, reason: str = "Customer request")
     Credits the refund amount back to the original payment card."""
     from ...database import async_session
     from ...models.booking import Booking
-    from ...models.payment import Payment
+    from ...models.payment import Payment, RefundRecord
     from ...models.loyalty import LoyaltyAccount, LoyaltyTransaction
     from ...services.card_service import card_service
     from sqlalchemy import select
@@ -265,6 +289,7 @@ async def process_refund_tool(booking_id: str, reason: str = "Customer request")
         refund_amount = payment.amount if payment else 0
         credited_card = None
         points_refunded = 0
+        refund_method = None
 
         if payment and payment.card_last_four:
             cards = await card_service.list_cards(user_id)
@@ -277,9 +302,11 @@ async def process_refund_tool(booking_id: str, reason: str = "Customer request")
                         description=f"Refund for booking {booking.pnr}",
                     )
                     credited_card = c
+                    refund_method = "card"
                     break
         elif payment and payment.method == "points":
-            points_refunded = int(refund_amount / 0.01)
+            points_refunded = int(refund_amount / DOLLARS_PER_POINT)
+            refund_method = "points"
             acct_result = await db.execute(
                 select(LoyaltyAccount).where(LoyaltyAccount.user_id == UUID(user_id))
             )
@@ -292,6 +319,19 @@ async def process_refund_tool(booking_id: str, reason: str = "Customer request")
                 ))
 
         booking.status = "refunded"
+
+        record = RefundRecord(
+            booking_id=booking.id,
+            user_id=UUID(user_id),
+            action_type="refund",
+            amount=refund_amount,
+            reason=reason,
+            refund_method=refund_method or "card",
+            card_last_four=payment.card_last_four if payment else None,
+            status="completed",
+            pnr=booking.pnr,
+        )
+        db.add(record)
         await db.commit()
 
     parts = [

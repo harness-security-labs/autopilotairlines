@@ -36,6 +36,14 @@ CREATE TABLE IF NOT EXISTS flights (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS flight_cancellations (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    flight_id UUID REFERENCES flights(id),
+    cancelled_date DATE NOT NULL,
+    reason VARCHAR(255),
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS seats (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     flight_id UUID REFERENCES flights(id),

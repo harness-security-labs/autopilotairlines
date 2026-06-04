@@ -22,6 +22,23 @@ class Payment(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class RefundRecord(Base):
+    __tablename__ = "refund_records"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    booking_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("bookings.id"))
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
+    action_type: Mapped[str] = mapped_column(String(20))  # "cancellation" or "refund"
+    amount: Mapped[float] = mapped_column(Float, default=0)
+    currency: Mapped[str] = mapped_column(String(10), default="USD")
+    reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    refund_method: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    card_last_four: Mapped[str | None] = mapped_column(String(4), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="completed")
+    pnr: Mapped[str] = mapped_column(String(10))
+    processed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class PaymentMethod(Base):
     __tablename__ = "payment_methods"
 

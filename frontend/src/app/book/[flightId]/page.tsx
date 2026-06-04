@@ -130,6 +130,7 @@ function BookPageContent() {
   const [pointsEarned12m, setPointsEarned12m] = useState(0);
   const [usePoints, setUsePoints] = useState(false);
   const [pointsToUse, setPointsToUse] = useState(0);
+  const [redemptionRate, setRedemptionRate] = useState(0.10);
 
   const [currentUser, setCurrentUser] = useState<{ name: string; email: string; date_of_birth?: string } | null>(null);
   const [savedPassengers, setSavedPassengers] = useState<Passenger[]>([]);
@@ -218,6 +219,11 @@ function BookPageContent() {
     fetch(`${API_URL}/api/v1/bookings/coupons/available`)
       .then((r) => r.ok ? r.json() : null)
       .then((data) => { if (data?.offers) setAvailableOffers(data.offers); })
+      .catch(() => {});
+
+    fetch(`${API_URL}/api/v1/loyalty/tiers`)
+      .then((r) => r.ok ? r.json() : null)
+      .then((data) => { if (data?.redemption_rate) setRedemptionRate(data.redemption_rate); })
       .catch(() => {});
 
     fetch(`${API_URL}/api/v1/loyalty/balance`, {
@@ -362,7 +368,7 @@ function BookPageContent() {
   const perPersonPrice = outboundPrice + returnPrice;
   const subtotal = perPersonPrice * passengers.length;
   const afterDiscount = subtotal * (1 - discount / 100);
-  const pointsValue = usePoints ? Math.min(pointsToUse * 0.01, afterDiscount) : 0;
+  const pointsValue = usePoints ? Math.min(pointsToUse * redemptionRate, afterDiscount) : 0;
   const finalPrice = afterDiscount - pointsValue;
 
   const getClassAvailable = (f: Flight | null) => {
@@ -822,7 +828,7 @@ function BookPageContent() {
                       onChange={(e) => {
                         setUsePoints(e.target.checked);
                         if (e.target.checked) {
-                          const maxPoints = Math.min(loyaltyPoints, Math.ceil(afterDiscount / 0.01));
+                          const maxPoints = Math.min(loyaltyPoints, Math.ceil(afterDiscount / redemptionRate));
                           setPointsToUse(maxPoints);
                         } else {
                           setPointsToUse(0);
@@ -837,33 +843,33 @@ function BookPageContent() {
                   <div>
                     <p className="text-muted-foreground">Available now</p>
                     <p className="font-bold text-lg text-amber-700 dark:text-amber-400">{loyaltyPoints.toLocaleString()}</p>
-                    <p className="text-muted-foreground">Worth ${(loyaltyPoints * 0.01).toFixed(2)}</p>
+                    <p className="text-muted-foreground">Worth ${(loyaltyPoints * redemptionRate).toFixed(2)}</p>
                   </div>
                   <div>
                     <p className="text-muted-foreground">Earned (12 months)</p>
                     <p className="font-bold text-lg">{pointsEarned12m.toLocaleString()}</p>
-                    <p className="text-muted-foreground">10 pts per $1 spent</p>
+                    <p className="text-muted-foreground">1–3 pts per $1 spent</p>
                   </div>
                 </div>
                 {usePoints && (
                   <div className="mt-3 pt-3 border-t border-amber-200 dark:border-amber-800">
-                    <label className="text-xs font-medium text-muted-foreground mb-1 block">Points to use (max {Math.min(loyaltyPoints, Math.ceil(afterDiscount / 0.01)).toLocaleString()})</label>
+                    <label className="text-xs font-medium text-muted-foreground mb-1 block">Points to use (max {Math.min(loyaltyPoints, Math.ceil(afterDiscount / redemptionRate)).toLocaleString()})</label>
                     <div className="flex items-center gap-2">
                       <Input
                         type="number"
                         value={pointsToUse}
                         min={0}
-                        max={Math.min(loyaltyPoints, Math.ceil(afterDiscount / 0.01))}
+                        max={Math.min(loyaltyPoints, Math.ceil(afterDiscount / redemptionRate))}
                         onChange={(e) => {
-                          const val = Math.min(Math.max(0, parseInt(e.target.value) || 0), loyaltyPoints, Math.ceil(afterDiscount / 0.01));
+                          const val = Math.min(Math.max(0, parseInt(e.target.value) || 0), loyaltyPoints, Math.ceil(afterDiscount / redemptionRate));
                           setPointsToUse(val);
                         }}
                         className="w-32"
                       />
-                      <span className="text-xs text-muted-foreground">= ${(pointsToUse * 0.01).toFixed(2)} off</span>
+                      <span className="text-xs text-muted-foreground">= ${(pointsToUse * redemptionRate).toFixed(2)} off</span>
                       <button
                         type="button"
-                        onClick={() => setPointsToUse(Math.min(loyaltyPoints, Math.ceil(afterDiscount / 0.01)))}
+                        onClick={() => setPointsToUse(Math.min(loyaltyPoints, Math.ceil(afterDiscount / redemptionRate)))}
                         className="text-xs text-blue-600 hover:underline"
                       >
                         Use max

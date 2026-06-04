@@ -12,8 +12,8 @@ from ..middleware.auth import require_auth
 
 router = APIRouter(prefix="/api/v1/loyalty", tags=["loyalty"])
 
-POINTS_PER_DOLLAR = 10
-DOLLARS_PER_POINT = 0.01
+from ..constants import DOLLARS_PER_POINT, POINTS_PER_DOLLAR, TIER_THRESHOLDS, compute_tier
+from ..models.user import User
 
 
 class LoyaltyResponse(BaseModel):
@@ -51,6 +51,15 @@ async def get_balance(
         ))
     )
     points_earned_12m = earned_result.scalar() or 0
+
+    correct_tier = compute_tier(points_earned_12m)
+    if account.tier != correct_tier:
+        account.tier = correct_tier
+        user_result = await db.execute(select(User).where(User.id == UUID(current_user["sub"])))
+        user = user_result.scalar_one_or_none()
+        if user:
+            user.loyalty_tier = correct_tier
+        await db.commit()
 
     return LoyaltyResponse(
         points=account.points,
@@ -116,3 +125,12 @@ async def redeem_points(
     db.add(txn)
     await db.commit()
     return {"status": "redeemed", "points_remaining": account.points}
+
+
+@router.get("/tiers")
+async def get_tier_info():
+    return {
+        "thresholds": TIER_THRESHOLDS,
+        "earn_rates": POINTS_PER_DOLLAR,
+        "redemption_rate": DOLLARS_PER_POINT,
+    }

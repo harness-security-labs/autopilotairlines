@@ -7,7 +7,7 @@ from ..tools.user_tools import get_user_profile_tool, lookup_user_tool
 from ..tools.email_tools import send_email_tool, get_sent_emails_tool
 from ..tools.loyalty_tools import check_loyalty_points_tool, modify_loyalty_points_tool
 from ..tools.memory_tools import save_memory_tool, recall_memories_tool
-from ..tools.selfservice_tools import lookup_policy_tool, get_my_loyalty_tool
+from ..tools.selfservice_tools import lookup_policy_tool, get_my_loyalty_tool, generate_coupon_tool, get_refund_history_tool
 from ..tools.booking_tools import cancel_booking_tool, get_cancellation_quote_tool
 
 TOOLS = [
@@ -23,6 +23,8 @@ TOOLS = [
     get_my_loyalty_tool,
     get_cancellation_quote_tool,
     cancel_booking_tool,
+    generate_coupon_tool,
+    get_refund_history_tool,
 ]
 
 

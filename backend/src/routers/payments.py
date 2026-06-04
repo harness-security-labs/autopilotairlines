@@ -13,8 +13,8 @@ from ..services.card_service import card_service
 
 router = APIRouter(prefix="/api/v1/payments", tags=["payments"])
 
-DOLLARS_PER_POINT = 0.01
-POINTS_PER_DOLLAR = 10
+from ..constants import DOLLARS_PER_POINT, POINTS_PER_DOLLAR, compute_tier
+from ..models.user import User
 
 
 class PaymentCreate(BaseModel):
@@ -114,14 +114,18 @@ async def process_payment(
     )
     db.add(payment)
 
-    points_earned = int(card_amount * POINTS_PER_DOLLAR)
     points_remaining = None
+    if points_used == 0:
+        result = await db.execute(
+            select(LoyaltyAccount).where(LoyaltyAccount.user_id == uuid.UUID(current_user["sub"]))
+        )
+        account = result.scalar_one_or_none()
+
+    tier = account.tier if account else "bronze"
+    earn_rate = POINTS_PER_DOLLAR.get(tier, 1)
+    points_earned = int(card_amount * earn_rate)
+
     if points_earned > 0 or points_used > 0:
-        if points_used == 0:
-            result = await db.execute(
-                select(LoyaltyAccount).where(LoyaltyAccount.user_id == uuid.UUID(current_user["sub"]))
-            )
-            account = result.scalar_one_or_none()
         if account and points_earned > 0:
             account.points += points_earned
             earn_txn = LoyaltyTransaction(
@@ -133,6 +137,27 @@ async def process_payment(
             db.add(earn_txn)
         if account:
             points_remaining = account.points
+
+    if account and points_earned > 0:
+        from datetime import datetime, timedelta, timezone
+        from sqlalchemy import func, and_
+        twelve_months_ago = datetime.now(timezone.utc) - timedelta(days=365)
+        earned_result = await db.execute(
+            select(func.coalesce(func.sum(LoyaltyTransaction.points), 0))
+            .where(and_(
+                LoyaltyTransaction.account_id == account.id,
+                LoyaltyTransaction.points > 0,
+                LoyaltyTransaction.created_at >= twelve_months_ago,
+            ))
+        )
+        total_earned_12m = (earned_result.scalar() or 0) + points_earned
+        new_tier = compute_tier(total_earned_12m)
+        if account.tier != new_tier:
+            account.tier = new_tier
+            user_result = await db.execute(select(User).where(User.id == uuid.UUID(current_user["sub"])))
+            user = user_result.scalar_one_or_none()
+            if user:
+                user.loyalty_tier = new_tier
 
     await db.commit()
     await db.refresh(payment)

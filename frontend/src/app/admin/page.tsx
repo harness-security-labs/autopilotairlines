@@ -35,6 +35,7 @@ interface AdminFlight {
   available_seats: number;
   total_seats: number;
   days_of_week: string | null;
+  cancelled_for_date?: boolean;
 }
 
 interface AdminUser {
@@ -64,6 +65,8 @@ interface AdminOffer {
   valid_from?: string | null;
   valid_until?: string | null;
   conditions?: OfferConditions;
+  source?: string;
+  issued_to?: string;
 }
 
 const TIER_COLORS: Record<string, string> = {
@@ -98,6 +101,8 @@ export default function AdminPage() {
   const [cancelDialog, setCancelDialog] = useState<AdminFlight | null>(null);
   const [cancelReason, setCancelReason] = useState("");
   const [cancelLoading, setCancelLoading] = useState(false);
+  const [cancelMode, setCancelMode] = useState<"series" | "date">("series");
+  const [cancelDate, setCancelDate] = useState("");
 
   const [rescheduleDialog, setRescheduleDialog] = useState<AdminFlight | null>(null);
   const [rescheduleDate, setRescheduleDate] = useState("");
@@ -134,7 +139,7 @@ export default function AdminPage() {
 
   const [flightPage, setFlightPage] = useState(1);
   const [userPage, setUserPage] = useState(1);
-  const [pageSize, setPageSize] = useState(10);
+  const [pageSize, setPageSize] = useState(25);
 
   const [toast, setToast] = useState<{ msg: string; type: "success" | "error" } | null>(null);
 
@@ -152,10 +157,19 @@ export default function AdminPage() {
       .then((r) => r.json())
       .then(setStats)
       .catch(() => {});
+    Promise.all([
+      fetch(`${API_URL}/api/v1/admin/offers`, { headers }).then((r) => r.json()),
+      fetch(`${API_URL}/api/v1/bookings/coupons/available`).then((r) => r.json()),
+    ]).then(([admin, system]) => {
+      setAdminOffers(admin.offers || []);
+      setSystemOffers(system.offers || []);
+      setOffersLoaded(true);
+    }).catch(() => {});
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const [flightStatus, setFlightStatus] = useState("");
+  const [flightDate, setFlightDate] = useState(() => new Date().toISOString().split("T")[0]);
 
   const fetchFlights = () => {
     if (!token) return;
@@ -163,9 +177,10 @@ export default function AdminPage() {
     const params = new URLSearchParams({ page: String(flightPage), page_size: String(pageSize) });
     if (flightSearch) params.set("search", flightSearch);
     if (flightStatus) params.set("status", flightStatus);
+    if (flightDate) params.set("date", flightDate);
     fetch(`${API_URL}/api/v1/admin/flights?${params}`, { headers })
       .then((r) => r.json())
-      .then((d) => { setFlights(d.items || []); setFlightTotal(d.total || 0); setFlightTotalPages(d.total_pages || 1); })
+      .then((d) => { setFlights(d.items || []); setFlightTotal(d.total || 0); setFlightTotalPages(d.total_pages || 1); setScheduledCount(d.scheduled_count ?? 0); setCancelledCount(d.cancelled_count ?? 0); })
       .catch(() => {})
       .finally(() => setFlightsLoading(false));
   };
@@ -187,7 +202,7 @@ export default function AdminPage() {
   useEffect(() => {
     if (activeTab === "flights") fetchFlights();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab, flightPage, flightSearch, flightStatus, pageSize]);
+  }, [activeTab, flightPage, flightSearch, flightStatus, flightDate, pageSize]);
 
   useEffect(() => {
     if (activeTab === "users") fetchUsers();
@@ -211,18 +226,29 @@ export default function AdminPage() {
 
   const handleCancelFlight = async () => {
     if (!cancelDialog) return;
+    if (cancelDialog.days_of_week && cancelMode === "date" && !cancelDate) {
+      showToast("Please select a date to cancel", "error");
+      return;
+    }
     setCancelLoading(true);
+    const payload: { reason: string | null; cancel_date?: string } = { reason: cancelReason || null };
+    if (cancelDialog.days_of_week && cancelMode === "date" && cancelDate) {
+      payload.cancel_date = cancelDate;
+    }
     const res = await fetch(`${API_URL}/api/v1/admin/flights/${cancelDialog.id}/cancel`, {
       method: "POST",
       headers,
-      body: JSON.stringify({ reason: cancelReason || null }),
+      body: JSON.stringify(payload),
     });
     const data = await res.json();
     setCancelLoading(false);
     setCancelDialog(null);
     setCancelReason("");
+    setCancelMode("series");
+    setCancelDate("");
     if (res.ok) {
-      showToast(`Flight ${data.flight_number} cancelled. ${data.affected_bookings} booking(s) notified.`);
+      const scope = cancelDialog.days_of_week && cancelMode === "date" ? `for ${cancelDate}` : "(entire series)";
+      showToast(`Flight ${data.flight_number} cancelled ${scope}. ${data.affected_bookings} booking(s) notified.`);
       fetchFlights();
     } else {
       showToast(data.detail || "Failed to cancel flight", "error");
@@ -346,8 +372,8 @@ export default function AdminPage() {
     }
   };
 
-  const scheduledCount = flights.filter((f) => f.status === "scheduled").length;
-  const cancelledCount = flights.filter((f) => f.status === "cancelled").length;
+  const [scheduledCount, setScheduledCount] = useState(0);
+  const [cancelledCount, setCancelledCount] = useState(0);
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-8">
@@ -379,8 +405,8 @@ export default function AdminPage() {
         </div>
       </div>
 
-      {/* Stats */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+      {/* General Stats */}
+      <div className="grid grid-cols-2 gap-4 mb-6">
         <Card className="p-5 relative overflow-hidden">
           <div className="absolute top-0 right-0 w-16 h-16 bg-blue-500/5 rounded-bl-[40px]" />
           <div className="flex items-center gap-3">
@@ -396,35 +422,6 @@ export default function AdminPage() {
           </div>
         </Card>
         <Card className="p-5 relative overflow-hidden">
-          <div className="absolute top-0 right-0 w-16 h-16 bg-green-500/5 rounded-bl-[40px]" />
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-green-100 dark:bg-green-900/40 flex items-center justify-center">
-              <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
-              </svg>
-            </div>
-            <div>
-              <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide">Bookings</p>
-              <p className="text-2xl font-bold">{stats?.bookings ?? "---"}</p>
-            </div>
-          </div>
-        </Card>
-        <Card className="p-5 relative overflow-hidden">
-          <div className="absolute top-0 right-0 w-16 h-16 bg-amber-500/5 rounded-bl-[40px]" />
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-amber-100 dark:bg-amber-900/40 flex items-center justify-center">
-              <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5 text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
-              </svg>
-            </div>
-            <div>
-              <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide">Flights</p>
-              <p className="text-2xl font-bold">{flightTotal || (stats?.mcp_tools ?? "---")}</p>
-              {flightTotal > 0 && <p className="text-[10px] text-muted-foreground">{scheduledCount} active, {cancelledCount} cancelled</p>}
-            </div>
-          </div>
-        </Card>
-        <Card className="p-5 relative overflow-hidden">
           <div className="absolute top-0 right-0 w-16 h-16 bg-purple-500/5 rounded-bl-[40px]" />
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-purple-100 dark:bg-purple-900/40 flex items-center justify-center">
@@ -435,13 +432,13 @@ export default function AdminPage() {
             <div>
               <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide">Offers</p>
               <p className="text-2xl font-bold">{offersLoaded ? adminOffers.length + systemOffers.length : "---"}</p>
-              {offersLoaded && <p className="text-[10px] text-muted-foreground">{adminOffers.length} campaigns</p>}
+              {offersLoaded && <p className="text-[10px] text-muted-foreground">{adminOffers.filter(o => o.source !== "ai_agent").length} campaigns, {adminOffers.filter(o => o.source === "ai_agent").length} AI-issued</p>}
             </div>
           </div>
         </Card>
       </div>
 
-      {/* Tab Bar */}
+      {/* Tab Bar + Filters */}
       <div className="flex items-center justify-between mb-6 border-b border-border pb-4">
         <div className="flex items-center gap-1 bg-muted p-1 rounded-lg">
           {([
@@ -469,6 +466,13 @@ export default function AdminPage() {
         <div className="flex items-center gap-2">
           {activeTab === "flights" && (
             <>
+              <Input
+                type="date"
+                value={flightDate}
+                onChange={(e) => { setFlightDate(e.target.value); setFlightPage(1); }}
+                className="w-36 text-xs"
+                placeholder="Filter by date"
+              />
               <select
                 value={flightStatus}
                 onChange={(e) => { setFlightStatus(e.target.value); setFlightPage(1); }}
@@ -523,6 +527,7 @@ export default function AdminPage() {
             <option value="10">10 / page</option>
             <option value="25">25 / page</option>
             <option value="50">50 / page</option>
+            <option value="100">100 / page</option>
           </select>
         </div>
       </div>
@@ -538,6 +543,26 @@ export default function AdminPage() {
         {/* Flights Tab */}
         <TabsContent value="flights">
           <div className="space-y-3">
+
+            {/* Flight Stats */}
+            <div className="grid grid-cols-4 gap-3 mb-2">
+              <Card className="p-4">
+                <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide">Bookings</p>
+                <p className="text-xl font-bold">{stats?.bookings ?? "---"}</p>
+              </Card>
+              <Card className="p-4">
+                <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide">Total Flights</p>
+                <p className="text-xl font-bold">{flightTotal}</p>
+              </Card>
+              <Card className="p-4">
+                <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide">Scheduled</p>
+                <p className="text-xl font-bold text-green-600">{scheduledCount}</p>
+              </Card>
+              <Card className="p-4">
+                <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide">Cancelled</p>
+                <p className="text-xl font-bold text-red-600">{cancelledCount}</p>
+              </Card>
+            </div>
 
             {flightsLoading && (
               <div className="space-y-3">
@@ -567,7 +592,7 @@ export default function AdminPage() {
                         <div className="flex items-center gap-2 flex-wrap">
                           <span className="text-sm font-mono font-bold">{f.flight_number}</span>
                           <Badge variant={f.status === "cancelled" ? "destructive" : "secondary"} className="text-[9px]">
-                            {f.status}
+                            {f.cancelled_for_date ? "cancelled (this date)" : f.status}
                           </Badge>
                           {f.days_of_week && (
                             <Badge className="text-[9px] bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300">Recurring</Badge>
@@ -589,7 +614,7 @@ export default function AdminPage() {
                         </p>
                       </div>
                     </div>
-                    {f.status !== "cancelled" && (
+                    {f.status !== "cancelled" && !f.cancelled_for_date && (
                       <div className="flex items-center gap-2 ml-4 shrink-0">
                         <Button
                           variant="outline"
@@ -606,7 +631,7 @@ export default function AdminPage() {
                           variant="destructive"
                           size="sm"
                           className="text-xs"
-                          onClick={() => setCancelDialog(f)}
+                          onClick={() => { setCancelDialog(f); if (flightDate && f.days_of_week) { setCancelMode("date"); setCancelDate(flightDate); } }}
                         >
                           <svg xmlns="http://www.w3.org/2000/svg" className="w-3.5 h-3.5 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                             <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
@@ -653,12 +678,50 @@ export default function AdminPage() {
         <TabsContent value="offers">
           <div className="space-y-6">
 
+            {/* AI-Generated Offers */}
+            {adminOffers.filter(o => o.source === "ai_agent").length > 0 && (
+              <div>
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">AI-Generated Offers</p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {adminOffers.filter(o => o.source === "ai_agent").map((o) => (
+                    <Card key={o.code} className="p-4 border-2 border-dashed border-violet-200 dark:border-violet-800 bg-violet-50/30 dark:bg-violet-950/20">
+                      <div className="flex items-start justify-between">
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono text-base font-bold text-violet-700 dark:text-violet-300">{o.code}</span>
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300">
+                              {o.discount_percent}% off
+                            </span>
+                            <Badge className="text-[9px] bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300">AI Generated</Badge>
+                          </div>
+                          <p className="text-sm text-muted-foreground mt-1">{o.description}</p>
+                          {o.issued_to && (
+                            <p className="text-[10px] text-muted-foreground mt-1">Issued to: <span className="font-mono">{o.issued_to}</span></p>
+                          )}
+                        </div>
+                      </div>
+                      {(o.valid_from || o.valid_until) && (
+                        <div className="flex items-center gap-3 mt-3 pt-3 border-t border-violet-200/50 dark:border-violet-800/50">
+                          {o.valid_from && (
+                            <span className="text-[10px] text-muted-foreground">From: <span className="font-medium">{o.valid_from}</span></span>
+                          )}
+                          {o.valid_until && (
+                            <span className="text-[10px] text-muted-foreground">Until: <span className="font-medium">{o.valid_until}</span></span>
+                          )}
+                        </div>
+                      )}
+                    </Card>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {/* Admin Campaigns */}
-            {adminOffers.length > 0 && (
+            {adminOffers.filter(o => o.source !== "ai_agent").length > 0 && (
               <div>
                 <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">Your Campaigns</p>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  {adminOffers.map((o) => (
+                  {adminOffers.filter(o => o.source !== "ai_agent").map((o) => (
                     <Card key={o.code} className="p-4 border-2 border-dashed border-blue-200 dark:border-blue-800 bg-blue-50/30 dark:bg-blue-950/20">
                       <div className="flex items-start justify-between">
                         <div>
@@ -706,7 +769,7 @@ export default function AdminPage() {
                     <path strokeLinecap="round" strokeLinejoin="round" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" />
                   </svg>
                 </div>
-                <p className="text-sm text-muted-foreground">No campaigns yet. Create your first offer to get started.</p>
+                <p className="text-sm text-muted-foreground">No campaigns or AI-generated offers yet. Create an offer or let the AI agent issue goodwill coupons.</p>
               </Card>
             )}
 
@@ -834,7 +897,7 @@ export default function AdminPage() {
       </Tabs>
 
       {/* Cancel Flight Dialog */}
-      <Dialog open={!!cancelDialog} onOpenChange={(open) => { if (!open) setCancelDialog(null); }}>
+      <Dialog open={!!cancelDialog} onOpenChange={(open) => { if (!open) { setCancelDialog(null); setCancelMode("series"); setCancelDate(""); } }}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Cancel Flight</DialogTitle>
@@ -848,8 +911,39 @@ export default function AdminPage() {
               <p className="text-xs text-muted-foreground">{cancelDialog?.origin} → {cancelDialog?.destination}</p>
               <p className="text-xs text-muted-foreground">{cancelDialog && new Date(cancelDialog.departure).toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" })}</p>
             </div>
+            {cancelDialog?.days_of_week && (
+              <div>
+                <label className="text-xs font-medium text-muted-foreground mb-2 block">Cancellation scope</label>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setCancelMode("date")}
+                    className={`flex-1 p-3 rounded-lg border text-left text-xs transition-all ${cancelMode === "date" ? "border-red-500 bg-red-50 dark:bg-red-950/30" : "border-border hover:border-muted-foreground/50"}`}
+                  >
+                    <p className="font-semibold mb-0.5">Specific date</p>
+                    <p className="text-muted-foreground">Cancel only one occurrence</p>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCancelMode("series")}
+                    className={`flex-1 p-3 rounded-lg border text-left text-xs transition-all ${cancelMode === "series" ? "border-red-500 bg-red-50 dark:bg-red-950/30" : "border-border hover:border-muted-foreground/50"}`}
+                  >
+                    <p className="font-semibold mb-0.5">Entire series</p>
+                    <p className="text-muted-foreground">Cancel all future dates</p>
+                  </button>
+                </div>
+              </div>
+            )}
+            {cancelDialog?.days_of_week && cancelMode === "date" && (
+              <div>
+                <label className="text-xs font-medium text-muted-foreground mb-1 block">Date to cancel</label>
+                <Input type="date" value={cancelDate} onChange={(e) => setCancelDate(e.target.value)} />
+              </div>
+            )}
             <p className="text-sm text-muted-foreground">
-              This will cancel the flight and notify all affected passengers. Bookings will be automatically cancelled and refunds initiated.
+              {cancelDialog?.days_of_week && cancelMode === "date"
+                ? "Bookings on this date will be cancelled and passengers notified. The flight will not be bookable for this date."
+                : "This will cancel the flight and notify all affected passengers. Bookings will be automatically cancelled and refunds initiated."}
             </p>
             <div>
               <label className="text-xs font-medium text-muted-foreground mb-1 block">Reason (optional)</label>
@@ -859,7 +953,7 @@ export default function AdminPage() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setCancelDialog(null)}>Keep Flight</Button>
             <Button variant="destructive" disabled={cancelLoading} onClick={handleCancelFlight}>
-              {cancelLoading ? "Cancelling..." : "Cancel Flight"}
+              {cancelLoading ? "Cancelling..." : cancelDialog?.days_of_week && cancelMode === "date" ? "Cancel This Date" : "Cancel Flight"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -896,11 +990,21 @@ export default function AdminPage() {
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="text-xs font-medium text-muted-foreground mb-1 block">New Departure</label>
-                <Input type="datetime-local" value={rescheduleDep} onChange={(e) => setRescheduleDep(e.target.value)} />
+                <Input type="datetime-local" value={rescheduleDep} onChange={(e) => {
+                  const newDep = e.target.value;
+                  setRescheduleDep(newDep);
+                  if (rescheduleDialog && newDep) {
+                    const origDuration = new Date(rescheduleDialog.arrival).getTime() - new Date(rescheduleDialog.departure).getTime();
+                    const newArr = new Date(new Date(newDep).getTime() + origDuration);
+                    const pad = (n: number) => n.toString().padStart(2, "0");
+                    setRescheduleArr(`${newArr.getFullYear()}-${pad(newArr.getMonth() + 1)}-${pad(newArr.getDate())}T${pad(newArr.getHours())}:${pad(newArr.getMinutes())}`);
+                  }
+                }} />
               </div>
               <div>
                 <label className="text-xs font-medium text-muted-foreground mb-1 block">New Arrival</label>
                 <Input type="datetime-local" value={rescheduleArr} onChange={(e) => setRescheduleArr(e.target.value)} />
+                <p className="text-[10px] text-muted-foreground mt-1">Auto-computed from flight duration</p>
               </div>
             </div>
             <div>
@@ -1047,7 +1151,7 @@ export default function AdminPage() {
               <label className="text-xs font-medium text-muted-foreground mb-1 block">Points to credit</label>
               <Input type="number" min="1" value={creditPoints} onChange={(e) => setCreditPoints(e.target.value)} placeholder="e.g. 5000" />
               {creditPoints && parseInt(creditPoints) > 0 && (
-                <p className="text-[10px] text-muted-foreground mt-1">Worth ${(parseInt(creditPoints) * 0.01).toFixed(2)}</p>
+                <p className="text-[10px] text-muted-foreground mt-1">Worth ${(parseInt(creditPoints) * 0.10).toFixed(2)}</p>
               )}
             </div>
             <div>

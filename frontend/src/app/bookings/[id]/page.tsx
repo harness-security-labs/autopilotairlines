@@ -71,6 +71,20 @@ interface Receipt {
   };
 }
 
+interface RefundHistoryRecord {
+  id: string;
+  booking_id: string;
+  pnr: string;
+  action_type: string;
+  amount: number;
+  currency: string;
+  reason: string | null;
+  refund_method: string | null;
+  card_last_four: string | null;
+  status: string;
+  processed_at: string;
+}
+
 interface BoardingPass {
   booking_id: string;
   pnr: string;
@@ -101,6 +115,7 @@ export default function BookingDetailPage() {
   const [cancelling, setCancelling] = useState(false);
 
   const [boardingPass, setBoardingPass] = useState<BoardingPass | null>(null);
+  const [refundHistory, setRefundHistory] = useState<RefundHistoryRecord[]>([]);
   const [undoLoading, setUndoLoading] = useState(false);
   const boardingPassRef = useRef<HTMLDivElement>(null);
   const receiptRef = useRef<HTMLDivElement>(null);
@@ -129,7 +144,15 @@ export default function BookingDetailPage() {
 
     fetch(`${API_URL}/api/v1/bookings/${bookingId}/receipt`, { headers })
       .then((r) => r.ok ? r.json() : null)
-      .then((data) => { if (data) setReceipt(data); })
+      .then((data) => {
+        if (data) {
+          setReceipt(data);
+          fetch(`${API_URL}/api/v1/refunds/history/${data.booking.pnr}`, { headers })
+            .then((r) => r.ok ? r.json() : null)
+            .then((records) => { if (records) setRefundHistory(records); })
+            .catch(() => {});
+        }
+      })
       .catch(() => {});
   }, [bookingId, router]);
 
@@ -138,12 +161,20 @@ export default function BookingDetailPage() {
     setCancelling(true);
     try {
       const token = localStorage.getItem("token");
+      const headers: Record<string, string> = { Authorization: `Bearer ${token}` || "" };
       const res = await fetch(`${API_URL}/api/v1/bookings/${bookingId}/cancel`, {
         method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
+        headers,
       });
       if (res.ok) {
         setBooking((prev) => prev ? { ...prev, status: "cancelled" } : prev);
+        if (booking?.pnr) {
+          const histRes = await fetch(`${API_URL}/api/v1/refunds/history/${booking.pnr}`, { headers });
+          if (histRes.ok) {
+            const records = await histRes.json();
+            setRefundHistory(records);
+          }
+        }
       }
     } catch {}
     setCancelling(false);
@@ -497,55 +528,90 @@ export default function BookingDetailPage() {
                 <p className="text-muted-foreground text-xs">Ticket Status</p>
                 <Badge variant={statusColor} className="capitalize mt-0.5">{booking.status.replace("_", " ")}</Badge>
               </div>
+              {receipt?.booking.coupon_code && (
+                <div>
+                  <p className="text-muted-foreground text-xs">Coupon Applied</p>
+                  <p className="font-medium font-mono text-green-600">{receipt.booking.coupon_code}</p>
+                </div>
+              )}
             </div>
           </div>
 
           {/* Booking Progress Timeline */}
           <div className="rounded-lg border border-border p-4 mb-6">
             <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide mb-3">Booking Timeline</p>
-            <div className="flex items-center justify-between">
-              {[
-                { label: "Booked", done: true },
-                { label: "Confirmed", done: booking.status !== "cancelled" },
-                { label: "Checked In", done: booking.status === "checked_in" },
-                { label: "Boarded", done: false },
-              ].map((step, i, arr) => (
-                <div key={step.label} className="flex items-center">
-                  <div className="flex flex-col items-center">
-                    <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold ${
-                      booking.status === "cancelled" && i > 0
-                        ? "bg-red-100 dark:bg-red-900/30 text-red-600"
-                        : step.done
-                        ? "bg-green-600 text-white"
-                        : "bg-muted text-muted-foreground"
-                    }`}>
-                      {booking.status === "cancelled" && i > 0 ? (
-                        <svg xmlns="http://www.w3.org/2000/svg" className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                        </svg>
-                      ) : step.done ? (
-                        <svg xmlns="http://www.w3.org/2000/svg" className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                        </svg>
-                      ) : (
-                        i + 1
+            {(() => {
+              const cancellation = refundHistory.find(r => r.action_type === "cancellation");
+              const refund = refundHistory.find(r => r.action_type === "refund");
+              const isCancelled = booking.status === "cancelled" || booking.status === "refunded";
+
+              const steps = [
+                { label: "Booked", done: true, date: new Date(booking.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric" }) },
+                { label: "Confirmed", done: !isCancelled, date: new Date(booking.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric" }) },
+                ...(isCancelled
+                  ? [
+                      { label: "Cancelled", done: true, date: new Date(cancellation?.processed_at || booking.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric" }) },
+                      ...(refund || booking.status === "refunded"
+                        ? [{ label: "Refunded", done: true, date: new Date(refund?.processed_at || booking.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric" }) }]
+                        : []),
+                    ]
+                  : [
+                      { label: "Checked In", done: booking.status === "checked_in", date: booking.status === "checked_in" ? new Date().toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "" },
+                      { label: "Boarded", done: false, date: "" },
+                    ]),
+              ];
+
+              return (
+                <div className="flex items-center justify-between">
+                  {steps.map((step, i, arr) => (
+                    <div key={step.label} className="flex items-center">
+                      <div className="flex flex-col items-center">
+                        <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold ${
+                          step.label === "Cancelled"
+                            ? "bg-red-100 dark:bg-red-900/30 text-red-600"
+                            : step.label === "Refunded"
+                            ? "bg-amber-100 dark:bg-amber-900/30 text-amber-600"
+                            : step.done
+                            ? "bg-green-600 text-white"
+                            : "bg-muted text-muted-foreground"
+                        }`}>
+                          {step.label === "Cancelled" ? (
+                            <svg xmlns="http://www.w3.org/2000/svg" className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                          ) : step.label === "Refunded" ? (
+                            <svg xmlns="http://www.w3.org/2000/svg" className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
+                            </svg>
+                          ) : step.done ? (
+                            <svg xmlns="http://www.w3.org/2000/svg" className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                            </svg>
+                          ) : (
+                            i + 1
+                          )}
+                        </div>
+                        <p className={`text-[10px] mt-1 ${step.done ? "text-foreground font-medium" : "text-muted-foreground"}`}>{step.label}</p>
+                        {step.date && <p className="text-[9px] text-muted-foreground">{step.date}</p>}
+                      </div>
+                      {i < arr.length - 1 && (
+                        <div className={`w-12 sm:w-16 h-0.5 mx-1 mb-6 ${
+                          step.label === "Cancelled" || step.label === "Refunded"
+                            ? "bg-red-200 dark:bg-red-900/50"
+                            : step.done && arr[i + 1].done
+                            ? "bg-green-600"
+                            : "bg-muted"
+                        }`} />
                       )}
                     </div>
-                    <p className={`text-[10px] mt-1 ${step.done ? "text-foreground font-medium" : "text-muted-foreground"}`}>{step.label}</p>
-                  </div>
-                  {i < arr.length - 1 && (
-                    <div className={`w-12 sm:w-16 h-0.5 mx-1 mb-4 ${
-                      booking.status === "cancelled" ? "bg-red-200 dark:bg-red-900/50" :
-                      step.done && arr[i + 1].done ? "bg-green-600" : "bg-muted"
-                    }`} />
-                  )}
+                  ))}
                 </div>
-              ))}
-            </div>
+              );
+            })()}
           </div>
 
           {/* Fare Summary (compact) */}
-          {receipt && (
+          {receipt && (receipt.payment || receipt.pricing.amount_paid > 0 || receipt.pricing.total > 0) && (
             <div className="rounded-lg border border-border p-4 mb-6">
               <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide mb-3">Fare Summary</p>
               <div className="space-y-1.5 text-sm">
@@ -599,18 +665,87 @@ export default function BookingDetailPage() {
             </ul>
           </div>
 
+          {/* Cancellation & Refund History */}
+          {refundHistory.length > 0 && (
+            <div className="rounded-lg border border-border p-4 mb-6">
+              <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide mb-3">Transaction History</p>
+              <div className="space-y-2">
+                {refundHistory.map((record) => (
+                  <div key={record.id} className="flex items-start gap-3 py-2 border-b border-border/50 last:border-0">
+                    <div className={`mt-0.5 w-6 h-6 rounded-full flex items-center justify-center shrink-0 ${
+                      record.action_type === "cancellation"
+                        ? "bg-red-100 dark:bg-red-900/30"
+                        : "bg-amber-100 dark:bg-amber-900/30"
+                    }`}>
+                      {record.action_type === "cancellation" ? (
+                        <svg xmlns="http://www.w3.org/2000/svg" className="w-3.5 h-3.5 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      ) : (
+                        <svg xmlns="http://www.w3.org/2000/svg" className="w-3.5 h-3.5 text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
+                        </svg>
+                      )}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-medium">
+                            {record.action_type === "cancellation" ? "Booking Cancelled" : "Refund Processed"}
+                          </span>
+                          <Badge
+                            variant={record.action_type === "cancellation" ? "destructive" : "secondary"}
+                            className="text-[10px]"
+                          >
+                            {record.status}
+                          </Badge>
+                        </div>
+                        <span className="text-xs text-muted-foreground">
+                          {new Date(record.processed_at).toLocaleDateString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-1 text-xs text-muted-foreground">
+                        {record.action_type === "refund" && (
+                          <span className="font-medium text-foreground">${record.amount.toFixed(2)} {record.currency}</span>
+                        )}
+                        {record.refund_method && record.action_type === "refund" && (
+                          <span>
+                            → {record.refund_method === "card" ? "Card" : record.refund_method}
+                            {record.card_last_four && <span className="font-mono ml-1">••••{record.card_last_four}</span>}
+                          </span>
+                        )}
+                        {record.reason && <span>{record.reason}</span>}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Actions */}
           <div className="flex flex-wrap gap-2 pt-4 border-t border-border">
-            {booking.status === "confirmed" && !boardingPass && (
-              <>
-                <Link href={`/checkin?pnr=${booking.pnr}`}>
-                  <Button>Check In</Button>
-                </Link>
-                <Button variant="outline" onClick={handleCancel} disabled={cancelling}>
-                  {cancelling ? "Cancelling..." : "Cancel Booking"}
-                </Button>
-              </>
-            )}
+            {booking.status === "confirmed" && !boardingPass && (() => {
+              const dep = receipt?.flight.departure;
+              const hoursUntil = dep ? (new Date(dep).getTime() - Date.now()) / (1000 * 60 * 60) : null;
+              const checkinOpen = hoursUntil !== null && hoursUntil <= 48;
+              return (
+                <>
+                  {checkinOpen ? (
+                    <Link href={`/checkin?pnr=${booking.pnr}`}>
+                      <Button>Check In</Button>
+                    </Link>
+                  ) : hoursUntil !== null ? (
+                    <Button disabled title="Check-in opens 48 hours before departure">
+                      Check-in not open yet
+                    </Button>
+                  ) : null}
+                  <Button variant="outline" onClick={handleCancel} disabled={cancelling}>
+                    {cancelling ? "Cancelling..." : "Cancel Booking"}
+                  </Button>
+                </>
+              );
+            })()}
             {booking.status === "checked_in" && !boardingPass && (
               <Link href={`/checkin?pnr=${booking.pnr}`}>
                 <Button>View Boarding Pass</Button>
@@ -799,7 +934,7 @@ export default function BookingDetailPage() {
             <div className="mb-4">
               <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide mb-2">Loyalty Redemption</p>
               <div className="flex justify-between text-sm text-amber-600">
-                <span>{receipt.pricing.points_used.toLocaleString()} points redeemed @ $0.01/pt</span>
+                <span>{receipt.pricing.points_used.toLocaleString()} points redeemed @ $0.10/pt</span>
                 <span>-${receipt.pricing.points_value.toFixed(2)}</span>
               </div>
             </div>
@@ -815,7 +950,7 @@ export default function BookingDetailPage() {
             </div>
             {receipt.pricing.coupon_discount > 0 && (
               <div className="flex justify-between text-green-600">
-                <span>Discount</span>
+                <span>Discount{receipt.pricing.coupon_code ? ` (${receipt.pricing.coupon_code})` : ""}</span>
                 <span>-${receipt.pricing.coupon_discount.toFixed(2)}</span>
               </div>
             )}
@@ -884,7 +1019,7 @@ export default function BookingDetailPage() {
                 <span className="font-medium text-amber-800 dark:text-amber-300">
                   +{receipt.pricing.points_earned.toLocaleString()} SkyPoints earned
                 </span>
-                <span className="text-xs text-amber-600 dark:text-amber-400">(value: ${(receipt.pricing.points_earned * 0.01).toFixed(2)})</span>
+                <span className="text-xs text-amber-600 dark:text-amber-400">(value: ${(receipt.pricing.points_earned * 0.10).toFixed(2)})</span>
               </div>
             </div>
           )}

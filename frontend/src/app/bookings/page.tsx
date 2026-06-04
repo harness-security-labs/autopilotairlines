@@ -16,7 +16,27 @@ interface Booking {
   pnr: string;
   passenger_name: string;
   passenger_email: string;
+  cabin_class?: string;
+  travel_date: string | null;
+  flight_number: string | null;
+  origin: string | null;
+  destination: string | null;
+  departure: string | null;
   created_at: string;
+}
+
+interface RefundRecord {
+  id: string;
+  booking_id: string;
+  pnr: string;
+  action_type: string;
+  amount: number;
+  currency: string;
+  reason: string | null;
+  refund_method: string | null;
+  card_last_four: string | null;
+  status: string;
+  processed_at: string;
 }
 
 export default function BookingsPage() {
@@ -28,8 +48,9 @@ export default function BookingsPage() {
 
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [bookingsLoading, setBookingsLoading] = useState(true);
-  const [showMyBookings, setShowMyBookings] = useState(false);
+  const [showMyBookings, setShowMyBookings] = useState(true);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [refundRecords, setRefundRecords] = useState<Record<string, RefundRecord[]>>({});
 
   useEffect(() => {
     const token = localStorage.getItem("token");
@@ -38,13 +59,23 @@ export default function BookingsPage() {
       return;
     }
     setIsLoggedIn(true);
-    fetch(`${API_URL}/api/v1/bookings`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
+    const headers = { Authorization: `Bearer ${token}` };
+    fetch(`${API_URL}/api/v1/bookings`, { headers })
       .then((r) => r.ok ? r.json() : [])
-      .then((data) => {
+      .then((data: Booking[]) => {
         setBookings(data);
         setBookingsLoading(false);
+        const pnrsToFetch = data.filter(b => b.status === "cancelled" || b.status === "refunded").map(b => b.pnr);
+        pnrsToFetch.forEach((p) => {
+          fetch(`${API_URL}/api/v1/refunds/history/${p}`, { headers })
+            .then((r) => r.ok ? r.json() : [])
+            .then((records: RefundRecord[]) => {
+              if (records.length > 0) {
+                setRefundRecords((prev) => ({ ...prev, [p]: records }));
+              }
+            })
+            .catch(() => {});
+        });
       })
       .catch(() => setBookingsLoading(false));
   }, []);
@@ -133,7 +164,10 @@ export default function BookingsPage() {
               <div>
                 <div className="flex items-center gap-2 mb-1">
                   <p className="font-semibold">PNR: {lookupResult.pnr}</p>
-                  <Badge variant={lookupResult.status === "confirmed" ? "default" : lookupResult.status === "cancelled" ? "destructive" : "secondary"}>
+                  <Badge
+                    variant={lookupResult.status === "confirmed" ? "default" : lookupResult.status === "cancelled" ? "destructive" : "secondary"}
+                    className={lookupResult.status === "refunded" ? "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300 border-amber-200" : ""}
+                  >
                     {lookupResult.status}
                   </Badge>
                 </div>
@@ -177,31 +211,92 @@ export default function BookingsPage() {
 
           {showMyBookings && (
             <div className="space-y-3 animate-fade-in">
-              {bookings.map((booking) => (
-                <Link key={booking.id} href={`/bookings/${booking.id}`}>
-                  <Card className="p-4 hover:shadow-md transition-shadow cursor-pointer mb-3">
-                    <div className="flex justify-between items-center">
-                      <div>
-                        <div className="flex items-center gap-2 mb-1">
-                          <p className="font-semibold text-sm">PNR: {booking.pnr}</p>
-                          <Badge variant={booking.status === "confirmed" ? "default" : booking.status === "cancelled" ? "destructive" : "secondary"}>
-                            {booking.status}
-                          </Badge>
+              {bookings.map((booking) => {
+                const records = refundRecords[booking.pnr] || [];
+                const cancellation = records.find(r => r.action_type === "cancellation");
+                const refund = records.find(r => r.action_type === "refund");
+
+                return (
+                  <Link key={booking.id} href={`/bookings/${booking.id}`}>
+                    <Card className="p-4 hover:shadow-md transition-shadow cursor-pointer mb-3">
+                      <div className="flex justify-between items-start">
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2 mb-1">
+                            <p className="font-semibold text-sm">PNR: {booking.pnr}</p>
+                            {booking.flight_number && (
+                              <span className="text-xs font-mono text-muted-foreground">{booking.flight_number}</span>
+                            )}
+                            <Badge
+                              variant={booking.status === "confirmed" ? "default" : booking.status === "cancelled" ? "destructive" : "secondary"}
+                              className={booking.status === "refunded" ? "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300 border-amber-200" : ""}
+                            >
+                              {booking.status}
+                            </Badge>
+                          </div>
+                          {booking.origin && booking.destination && (
+                            <p className="text-sm font-medium">{booking.origin} → {booking.destination}</p>
+                          )}
+                          <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                            <span>{booking.passenger_name}</span>
+                            {booking.departure && (
+                              <span>{new Date(booking.departure).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })} at {new Date(booking.departure).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                            )}
+                          </div>
+
+                          {/* Timeline */}
+                          <div className="flex items-center gap-1 mt-2">
+                            <div className="flex items-center gap-1">
+                              <div className="w-2 h-2 rounded-full bg-green-500" />
+                              <span className="text-[10px] text-muted-foreground">Booked {new Date(booking.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</span>
+                            </div>
+                            {(booking.status === "cancelled" || booking.status === "refunded") && (
+                              <>
+                                <div className="w-4 h-px bg-border" />
+                                <div className="flex items-center gap-1">
+                                  <div className="w-2 h-2 rounded-full bg-red-500" />
+                                  <span className="text-[10px] text-muted-foreground">
+                                    Cancelled {cancellation?.processed_at
+                                      ? new Date(cancellation.processed_at).toLocaleDateString(undefined, { month: "short", day: "numeric" })
+                                      : new Date(booking.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+                                  </span>
+                                </div>
+                              </>
+                            )}
+                            {(booking.status === "refunded" || refund) && (
+                              <>
+                                <div className="w-4 h-px bg-border" />
+                                <div className="flex items-center gap-1">
+                                  <div className="w-2 h-2 rounded-full bg-amber-500" />
+                                  <span className="text-[10px] text-muted-foreground">
+                                    Refunded {refund?.amount ? `$${refund.amount.toFixed(0)} ` : ""}
+                                    {refund?.processed_at
+                                      ? new Date(refund.processed_at).toLocaleDateString(undefined, { month: "short", day: "numeric" })
+                                      : new Date(booking.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+                                  </span>
+                                </div>
+                              </>
+                            )}
+                            {booking.status === "confirmed" && (
+                              <>
+                                <div className="w-4 h-px bg-border" />
+                                <div className="flex items-center gap-1">
+                                  <div className="w-2 h-2 rounded-full bg-blue-500" />
+                                  <span className="text-[10px] text-muted-foreground">Confirmed {new Date(booking.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</span>
+                                </div>
+                              </>
+                            )}
+                          </div>
                         </div>
-                        <p className="text-xs text-muted-foreground">{booking.passenger_name}</p>
-                        <p className="text-xs text-muted-foreground">
-                          {new Date(booking.created_at).toLocaleDateString()}
-                        </p>
+                        {booking.status === "confirmed" && (
+                          <Button variant="outline" size="sm" onClick={(e) => { e.preventDefault(); cancelBooking(booking.id); }}>
+                            Cancel
+                          </Button>
+                        )}
                       </div>
-                      {booking.status === "confirmed" && (
-                        <Button variant="outline" size="sm" onClick={(e) => { e.preventDefault(); cancelBooking(booking.id); }}>
-                          Cancel
-                        </Button>
-                      )}
-                    </div>
-                  </Card>
-                </Link>
-              ))}
+                    </Card>
+                  </Link>
+                );
+              })}
             </div>
           )}
         </div>

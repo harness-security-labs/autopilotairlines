@@ -25,11 +25,11 @@ interface Transaction {
 }
 
 const TIER_ORDER = ["bronze", "silver", "gold", "platinum"];
-const TIER_THRESHOLDS: Record<string, number> = {
+const DEFAULT_TIER_THRESHOLDS: Record<string, number> = {
   bronze: 0,
-  silver: 25000,
-  gold: 50000,
-  platinum: 100000,
+  silver: 5000,
+  gold: 10000,
+  platinum: 25000,
 };
 
 const TIER_COLORS: Record<string, string> = {
@@ -50,7 +50,7 @@ const TIER_BENEFITS: { tier: string; benefits: string[] }[] = [
   {
     tier: "bronze",
     benefits: [
-      "Earn 10 pts per $1 spent",
+      "Earn 1 pt per $1 spent",
       "Base baggage allowance",
       "Online check-in",
     ],
@@ -59,6 +59,7 @@ const TIER_BENEFITS: { tier: string; benefits: string[] }[] = [
     tier: "silver",
     benefits: [
       "All Bronze benefits",
+      "Earn 1 pt per $1 spent",
       "+5kg per checked bag",
       "Priority check-in",
       "Seat selection included",
@@ -68,6 +69,7 @@ const TIER_BENEFITS: { tier: string; benefits: string[] }[] = [
     tier: "gold",
     benefits: [
       "All Silver benefits",
+      "Earn 1.5 pts per $1 spent",
       "+1 extra checked bag",
       "+5kg per bag, +3kg carry-on",
       "Lounge access (international)",
@@ -79,6 +81,7 @@ const TIER_BENEFITS: { tier: string; benefits: string[] }[] = [
     tier: "platinum",
     benefits: [
       "All Gold benefits",
+      "Earn 3 pts per $1 spent",
       "+1 extra checked bag",
       "+10kg per bag, +3kg carry-on",
       "Lounge access (all flights)",
@@ -94,8 +97,22 @@ export default function LoyaltyPage() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [tierThresholds, setTierThresholds] = useState<Record<string, number>>(DEFAULT_TIER_THRESHOLDS);
+  const [earnRates, setEarnRates] = useState<Record<string, number>>({ bronze: 1, silver: 1, gold: 1.5, platinum: 3 });
+  const [redemptionRate, setRedemptionRate] = useState(0.10);
 
   useEffect(() => {
+    fetch(`${API_URL}/api/v1/loyalty/tiers`)
+      .then((r) => r.ok ? r.json() : null)
+      .then((d) => {
+        if (d) {
+          if (d.thresholds) setTierThresholds(d.thresholds);
+          if (d.earn_rates) setEarnRates(d.earn_rates);
+          if (d.redemption_rate) setRedemptionRate(d.redemption_rate);
+        }
+      })
+      .catch(() => {});
+
     const token = localStorage.getItem("token");
     if (!token) {
       setLoading(false);
@@ -119,8 +136,8 @@ export default function LoyaltyPage() {
 
   const currentTierIdx = data ? TIER_ORDER.indexOf(data.tier) : 0;
   const nextTier = currentTierIdx < TIER_ORDER.length - 1 ? TIER_ORDER[currentTierIdx + 1] : null;
-  const nextTierThreshold = nextTier ? TIER_THRESHOLDS[nextTier] : 0;
-  const currentTierThreshold = data ? TIER_THRESHOLDS[data.tier] : 0;
+  const nextTierThreshold = nextTier ? tierThresholds[nextTier] : 0;
+  const currentTierThreshold = data ? tierThresholds[data.tier] : 0;
   const progressToNext = nextTier && data
     ? Math.min(100, Math.round(((data.points_earned_12m - currentTierThreshold) / (nextTierThreshold - currentTierThreshold)) * 100))
     : 100;
@@ -215,7 +232,7 @@ export default function LoyaltyPage() {
                   </svg>
                 </div>
                 <h3 className="font-semibold text-sm">Book & Earn</h3>
-                <p className="text-xs text-muted-foreground mt-1">Earn 10 pts per $1 on every booking</p>
+                <p className="text-xs text-muted-foreground mt-1">Earn {earnRates.bronze}–{earnRates.platinum} pts per $1 based on tier</p>
               </Card>
             </Link>
             <Link href="/">
@@ -226,7 +243,7 @@ export default function LoyaltyPage() {
                   </svg>
                 </div>
                 <h3 className="font-semibold text-sm">Pay with Points</h3>
-                <p className="text-xs text-muted-foreground mt-1">Use points at checkout ($0.01/pt)</p>
+                <p className="text-xs text-muted-foreground mt-1">Use points at checkout (${redemptionRate.toFixed(2)}/pt)</p>
               </Card>
             </Link>
             <Card className="p-5 h-full">
@@ -300,9 +317,9 @@ export default function LoyaltyPage() {
                 <h3 className="font-semibold text-sm capitalize">{t.tier}</h3>
               </div>
               <p className="text-[10px] text-muted-foreground mb-3">
-                {TIER_THRESHOLDS[t.tier] === 0 ? "0 - 24,999 pts/year" :
-                  t.tier === "platinum" ? "100,000+ pts/year" :
-                    `${TIER_THRESHOLDS[t.tier].toLocaleString()} - ${(TIER_THRESHOLDS[TIER_ORDER[TIER_ORDER.indexOf(t.tier) + 1]] - 1).toLocaleString()} pts/year`}
+                {t.tier === "platinum"
+                  ? `${tierThresholds[t.tier].toLocaleString()}+ pts/year`
+                  : `${tierThresholds[t.tier].toLocaleString()} - ${(tierThresholds[TIER_ORDER[TIER_ORDER.indexOf(t.tier) + 1]] - 1).toLocaleString()} pts/year`}
               </p>
               <ul className="space-y-1.5">
                 {t.benefits.map((b, i) => (
@@ -327,7 +344,7 @@ export default function LoyaltyPage() {
             <span className="text-lg font-bold text-blue-600">1</span>
           </div>
           <h3 className="font-semibold text-sm mb-1">Earn</h3>
-          <p className="text-xs text-muted-foreground">10 points per $1 spent on card payments. Points earned in the last 12 months determine your tier.</p>
+          <p className="text-xs text-muted-foreground">{earnRates.bronze} pt/$1 (Bronze/Silver), {earnRates.gold} pts/$1 (Gold), {earnRates.platinum} pts/$1 (Platinum). Points earned in 12 months determine your tier.</p>
         </Card>
         <Card className="p-5">
           <div className="w-9 h-9 rounded-lg bg-green-50 dark:bg-green-900/40 flex items-center justify-center mb-3">
@@ -341,7 +358,7 @@ export default function LoyaltyPage() {
             <span className="text-lg font-bold text-amber-600">3</span>
           </div>
           <h3 className="font-semibold text-sm mb-1">Redeem</h3>
-          <p className="text-xs text-muted-foreground">Use points at checkout: 100 pts = $1.00. Pay fully or partially with points on any booking.</p>
+          <p className="text-xs text-muted-foreground">Use points at checkout: {Math.round(1 / redemptionRate)} pts = $1.00. Pay fully or partially with points on any booking.</p>
         </Card>
       </div>
 

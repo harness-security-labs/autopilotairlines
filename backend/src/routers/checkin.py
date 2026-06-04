@@ -1,6 +1,6 @@
 import random
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -67,6 +67,19 @@ async def check_in(
         select(Flight).where(Flight.id == booking.flight_id)
     )
     flight = flight_result.scalar_one_or_none()
+
+    if flight and booking.travel_date:
+        from .flights import project_flight_to_date
+        dep, _ = project_flight_to_date(flight, booking.travel_date)
+        now = datetime.now(timezone.utc)
+        if dep.tzinfo is None:
+            dep = dep.replace(tzinfo=timezone.utc)
+        hours_until = (dep - now).total_seconds() / 3600
+        if hours_until > 48:
+            raise HTTPException(
+                status_code=400,
+                detail="Check-in opens 48 hours before departure",
+            )
 
     seat = _generate_seat(body.seat_preference)
     gate = f"{random.choice('ABCD')}{random.randint(1, 40)}"

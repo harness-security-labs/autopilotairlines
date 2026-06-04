@@ -1,14 +1,17 @@
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from .config import settings
 from .database import engine, Base
 from .routers import auth, flights, bookings, users, payments, loyalty, refunds, chat, admin, memory, checkin, baggage, payment_methods, reports
-from .mcp.server import router as mcp_router
+from .mcp.server import mcp_app, admin_router as mcp_admin_router
 from .services.flight_scheduler import run_scheduler
 
 
@@ -76,7 +79,8 @@ app.include_router(checkin.router)
 app.include_router(baggage.router)
 app.include_router(payment_methods.router)
 app.include_router(reports.router)
-app.include_router(mcp_router)
+app.include_router(mcp_admin_router)
+app.mount("/mcp", mcp_app)
 
 
 from starlette.middleware.base import BaseHTTPMiddleware

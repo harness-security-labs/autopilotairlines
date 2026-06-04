@@ -7,7 +7,7 @@ from sqlalchemy import select, and_, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import get_db
-from ..models.flight import Flight
+from ..models.flight import Flight, FlightCancellation
 from ..models.booking import Booking
 
 router = APIRouter(prefix="/api/v1/flights", tags=["flights"])
@@ -160,6 +160,12 @@ async def search_flights(
 
         matched = [f for f in all_flights if flight_operates_on(f, target)]
 
+        cancelled_result = await db.execute(
+            select(FlightCancellation.flight_id).where(FlightCancellation.cancelled_date == target)
+        )
+        cancelled_flight_ids = set(cancelled_result.scalars().all())
+        matched = [f for f in matched if f.id not in cancelled_flight_ids]
+
         results = []
         for f in matched:
             booked = await count_bookings_for_flight_date(db, f.id, target)
@@ -194,7 +200,7 @@ async def search_flights(
         # Find connecting flights (1-2 stops) when origin+destination specified
         if origin and destination:
             all_scheduled = await db.execute(select(Flight).where(Flight.status != "cancelled"))
-            all_on_date = [f for f in all_scheduled.scalars().all() if flight_operates_on(f, target)]
+            all_on_date = [f for f in all_scheduled.scalars().all() if flight_operates_on(f, target) and f.id not in cancelled_flight_ids]
 
             by_origin: dict[str, list] = {}
             by_dest: dict[str, list] = {}

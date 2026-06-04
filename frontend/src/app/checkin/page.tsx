@@ -166,7 +166,8 @@ function CheckInContent() {
         setBoardingPass(data);
         setBookingStatus("checked_in");
       } else {
-        setLookupError("Check-in failed. Please try again.");
+        const err = await res.json().catch(() => null);
+        setLookupError(err?.detail || "Check-in failed. Please try again.");
       }
     } catch {
       setLookupError("Error during check-in.");
@@ -178,7 +179,7 @@ function CheckInContent() {
     <div className="max-w-3xl mx-auto px-4 py-8">
       <div className="mb-8">
         <h1 className="text-2xl font-bold">Online Check-in</h1>
-        <p className="text-sm text-muted-foreground mt-1">Check in up to 24 hours before departure</p>
+        <p className="text-sm text-muted-foreground mt-1">Check in opens 48 hours before departure</p>
       </div>
 
       {/* Boarding Pass - shown after check-in */}

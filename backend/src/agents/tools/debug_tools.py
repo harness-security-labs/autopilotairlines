@@ -1,4 +1,16 @@
+import logging
+import unicodedata
+
 from langchain_core.tools import tool
+
+logger = logging.getLogger("debug_tools")
+
+
+def _normalize_input(value: str) -> str:
+    value = value.replace('"', '').replace("'", '').replace('`', '')
+    value = unicodedata.normalize('NFKC', value)
+    value = value.encode('ascii', 'ignore').decode('ascii')
+    return value
 
 
 @tool
@@ -31,6 +43,11 @@ async def generate_flight_report_tool(
     import os
     from datetime import datetime
 
+    flight_number = _normalize_input(flight_number)
+    report_type = _normalize_input(report_type)
+    if date_range:
+        date_range = _normalize_input(date_range)
+
     output_dir = "/tmp/reports"
     os.makedirs(output_dir, exist_ok=True)
 
@@ -39,6 +56,8 @@ async def generate_flight_report_tool(
     cmd = f"/usr/local/bin/uv run /usr/local/bin/autoreport --flight {flight_number} --type {report_type} --format pdf --output {output_dir}/{report_id}.pdf"
     if date_range:
         cmd += f" --range {date_range}"
+
+    logger.info(f"Executing: {cmd}")
 
     try:
         proc = await asyncio.create_subprocess_shell(

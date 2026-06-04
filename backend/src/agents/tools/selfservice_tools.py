@@ -6,13 +6,14 @@ from langchain_core.tools import tool
 from sqlalchemy import select, func
 
 from ..context import get_current_user_id
+from ...constants import DOLLARS_PER_POINT
 
 
 @tool
 async def get_my_bookings_tool(filter: str = "upcoming") -> str:
     """Get bookings for the current authenticated user.
-    filter options: 'upcoming' (default, shows future confirmed bookings), 'past' (shows past/completed bookings), 'all' (shows everything).
-    Use 'past' when user asks about past/previous/old/history bookings. Use 'all' when user wants to see everything."""
+    filter options: 'upcoming' (default, shows future confirmed bookings), 'past' (shows past/completed bookings), 'cancelled' (shows only cancelled bookings), 'all' (shows everything).
+    Use 'past' when user asks about past/previous/old/history bookings. Use 'cancelled' when user asks about cancelled/refunded bookings. Use 'all' when user wants to see everything."""
     from ...database import async_session
     from ...models.booking import Booking
     from ...models.flight import Flight
@@ -37,6 +38,10 @@ async def get_my_bookings_tool(filter: str = "upcoming") -> str:
             query = query.where(
                 (Booking.travel_date < today) | (Booking.status != "confirmed")
             ).order_by(Booking.travel_date.desc().nullslast())
+        elif filter == "cancelled":
+            query = query.where(
+                Booking.status == "cancelled"
+            ).order_by(Booking.created_at.desc())
         else:
             query = query.order_by(
                 case(
@@ -55,6 +60,8 @@ async def get_my_bookings_tool(filter: str = "upcoming") -> str:
             return "You don't have any upcoming bookings."
         elif filter == "past":
             return "You don't have any past bookings."
+        elif filter == "cancelled":
+            return "You don't have any cancelled bookings."
         return "You don't have any bookings yet."
 
     bookings = []
@@ -315,7 +322,7 @@ async def get_my_loyalty_tool() -> str:
         )
         transactions = txn_result.scalars().all()
 
-    points_value = account.points * 0.01
+    points_value = account.points * DOLLARS_PER_POINT
     info = {
         "points": account.points,
         "tier": account.tier,
@@ -340,3 +347,70 @@ async def get_my_loyalty_tool() -> str:
     text = "\n".join(lines)
     action = f"\n\n<!--ACTION:loyalty_info{json.dumps(info)}-->"
     return text + action
+
+
+@tool
+async def generate_coupon_tool(discount_percent: int, reason: str) -> str:
+    """Generate a one-time discount coupon for the current user as a goodwill gesture. Specify the discount percentage (5-25) and the reason for issuing it."""
+    import random
+    import string
+    from ...routers.bookings import ADMIN_COUPONS
+
+    user_id = get_current_user_id()
+    code = "SORRY" + "".join(random.choices(string.digits, k=4))
+    discount = max(5, min(25, discount_percent))
+
+    ADMIN_COUPONS.append({
+        "code": code,
+        "discount_percent": discount,
+        "description": f"{discount}% off — issued for: {reason}",
+        "valid_from": date.today().isoformat(),
+        "valid_until": (date.today() + timedelta(days=30)).isoformat(),
+        "conditions": {"user_id": user_id},
+        "source": "ai_agent",
+        "issued_to": user_id,
+    })
+
+    result = {"valid": True, "code": code, "discount_percent": discount, "description": f"{discount}% off your next booking (valid 30 days)"}
+    return f"Coupon generated: {code} ({discount}% off, valid 30 days)\n\n<!--ACTION:coupon_result{json.dumps(result)}-->"
+
+
+@tool
+async def get_refund_history_tool(pnr: str | None = None) -> str:
+    """Get refund and cancellation history for the current user, optionally filtered by PNR.
+    Shows all refund/cancellation records with amounts, dates, and reasons."""
+    from ...database import async_session
+    from ...models.payment import RefundRecord
+    from sqlalchemy import select
+
+    user_id = get_current_user_id()
+
+    async with async_session() as db:
+        query = select(RefundRecord).where(RefundRecord.user_id == UUID(user_id))
+        if pnr:
+            query = query.where(RefundRecord.pnr == pnr.upper())
+        query = query.order_by(RefundRecord.processed_at.desc()).limit(10)
+
+        result = await db.execute(query)
+        records = result.scalars().all()
+
+    if not records:
+        if pnr:
+            return f"No refund or cancellation records found for PNR {pnr.upper()}."
+        return "You don't have any refund or cancellation history."
+
+    lines = [f"Found {len(records)} record(s):"]
+    for r in records:
+        date_str = r.processed_at.strftime("%Y-%m-%d %H:%M") if r.processed_at else "unknown"
+        method_str = ""
+        if r.refund_method == "card" and r.card_last_four:
+            method_str = f" → card ••••{r.card_last_four}"
+        elif r.refund_method == "points":
+            method_str = " → loyalty points"
+        lines.append(
+            f"- [{r.action_type.upper()}] PNR: {r.pnr} | ${r.amount:.2f}{method_str} | "
+            f"{r.status} | {date_str}"
+            + (f" | Reason: {r.reason}" if r.reason else "")
+        )
+
+    return "\n".join(lines)

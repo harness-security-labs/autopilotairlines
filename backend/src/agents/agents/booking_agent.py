@@ -12,6 +12,7 @@ from ..tools.selfservice_tools import (
     validate_coupon_tool,
     check_flight_status_tool,
     get_my_loyalty_tool,
+    get_refund_history_tool,
 )
 from ..tools.payment_tools import get_payment_methods_tool, process_payment_tool
 
@@ -33,6 +34,7 @@ TOOLS = [
     get_payment_methods_tool,
     process_payment_tool,
     get_my_loyalty_tool,
+    get_refund_history_tool,
 ]
 
 

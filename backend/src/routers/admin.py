@@ -7,6 +7,7 @@ from sqlalchemy import select, func, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import settings
+from ..constants import DOLLARS_PER_POINT, TIER_THRESHOLDS
 from ..database import get_db
 from ..models.audit import AuditLog
 from ..models.user import User
@@ -205,6 +206,7 @@ async def reschedule_flight(
 
 class FlightCancel(BaseModel):
     reason: str | None = None
+    cancel_date: str | None = None
 
 
 @router.post("/flights/{flight_id}/cancel")
@@ -214,33 +216,128 @@ async def cancel_flight(
     current_user: dict = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ):
+    from ..models.payment import Payment, RefundRecord
+    from ..services.card_service import card_service
+
+    from datetime import date as date_type
+
     result = await db.execute(select(Flight).where(Flight.id == UUID(flight_id)))
     flight = result.scalar_one_or_none()
     if not flight:
         raise HTTPException(status_code=404, detail="Flight not found")
 
-    flight.status = "cancelled"
+    cancel_date = None
+    if body.cancel_date and flight.days_of_week:
+        cancel_date = date_type.fromisoformat(body.cancel_date)
+
+    if not cancel_date:
+        flight.status = "cancelled"
+    else:
+        from ..models.flight import FlightCancellation
+        db.add(FlightCancellation(
+            flight_id=flight.id,
+            cancelled_date=cancel_date,
+            reason=body.reason,
+        ))
     await db.commit()
 
+    booking_filters = [
+        Booking.flight_id == UUID(flight_id),
+        Booking.status != "cancelled",
+    ]
+    if cancel_date:
+        booking_filters.append(Booking.travel_date == cancel_date)
+
     bookings_result = await db.execute(
-        select(Booking).where(
-            Booking.flight_id == UUID(flight_id),
-            Booking.status != "cancelled",
-        )
+        select(Booking).where(*booking_filters)
     )
     affected_bookings = bookings_result.scalars().all()
 
+    reason = body.reason or "Operational requirements"
+    refunds_processed = 0
+
     for booking in affected_bookings:
         booking.status = "cancelled"
+
+        db.add(RefundRecord(
+            booking_id=booking.id,
+            user_id=booking.user_id,
+            action_type="cancellation",
+            amount=0,
+            reason=f"Flight {flight.flight_number} cancelled: {reason}",
+            refund_method=None,
+            card_last_four=None,
+            status="completed",
+            pnr=booking.pnr,
+        ))
+
+        payment_result = await db.execute(
+            select(Payment).where(Payment.booking_id == booking.id)
+        )
+        payment = payment_result.scalar_one_or_none()
+
+        if payment and payment.amount > 0:
+            refund_method = None
+            card_last_four = None
+
+            if payment.card_last_four:
+                try:
+                    cards = await card_service.list_cards(str(booking.user_id))
+                    for c in cards:
+                        if c["card_last_four"] == payment.card_last_four:
+                            await card_service.credit(
+                                card_id=c["id"],
+                                amount=payment.amount,
+                                reference_id=str(booking.id),
+                                description=f"Refund - flight {flight.flight_number} cancelled",
+                            )
+                            refund_method = "card"
+                            card_last_four = payment.card_last_four
+                            break
+                except Exception:
+                    pass
+            elif payment.method == "points":
+                points_back = int(payment.amount / DOLLARS_PER_POINT)
+                acct_result = await db.execute(
+                    select(LoyaltyAccount).where(LoyaltyAccount.user_id == booking.user_id)
+                )
+                account = acct_result.scalar_one_or_none()
+                if account:
+                    account.points += points_back
+                    db.add(LoyaltyTransaction(
+                        account_id=account.id, points=points_back,
+                        transaction_type="refund", source=f"Flight cancelled {booking.pnr}",
+                    ))
+                refund_method = "points"
+
+            db.add(RefundRecord(
+                booking_id=booking.id,
+                user_id=booking.user_id,
+                action_type="refund",
+                amount=payment.amount,
+                reason=f"Refund for flight {flight.flight_number} cancellation",
+                refund_method=refund_method or "card",
+                card_last_four=card_last_four,
+                status="completed",
+                pnr=booking.pnr,
+            ))
+            refunds_processed += 1
+
         await send_email(
             to=booking.passenger_email,
             subject=f"Flight {flight.flight_number} Cancelled - PNR {booking.pnr}",
             body=(
                 f"Dear {booking.passenger_name},\n\n"
                 f"We regret to inform you that flight {flight.flight_number} has been cancelled.\n"
-                f"Reason: {body.reason or 'Operational requirements'}\n\n"
-                f"Your booking (PNR: {booking.pnr}) has been cancelled. "
-                f"A refund will be processed automatically.\n\n"
+                f"Reason: {reason}\n\n"
+                f"Your booking (PNR: {booking.pnr}) has been cancelled and "
+                f"a refund of ${payment.amount:.2f} has been processed to your original payment method.\n\n"
+                f"We apologize for the inconvenience."
+            ) if payment and payment.amount > 0 else (
+                f"Dear {booking.passenger_name},\n\n"
+                f"We regret to inform you that flight {flight.flight_number} has been cancelled.\n"
+                f"Reason: {reason}\n\n"
+                f"Your booking (PNR: {booking.pnr}) has been cancelled.\n\n"
                 f"We apologize for the inconvenience."
             ),
         )
@@ -252,7 +349,8 @@ async def cancel_flight(
         "flight_id": flight_id,
         "flight_number": flight.flight_number,
         "affected_bookings": len(affected_bookings),
-        "reason": body.reason or "Operational requirements",
+        "refunds_processed": refunds_processed,
+        "reason": reason,
     }
 
 
@@ -267,6 +365,9 @@ async def admin_cancel_booking(
     current_user: dict = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ):
+    from ..models.payment import Payment, RefundRecord
+    from ..services.card_service import card_service
+
     result = await db.execute(select(Booking).where(Booking.id == UUID(booking_id)))
     booking = result.scalar_one_or_none()
     if not booking:
@@ -274,7 +375,74 @@ async def admin_cancel_booking(
     if booking.status == "cancelled":
         raise HTTPException(status_code=400, detail="Booking already cancelled")
 
+    reason = body.reason or "Administrative action"
     booking.status = "cancelled"
+
+    db.add(RefundRecord(
+        booking_id=booking.id,
+        user_id=booking.user_id,
+        action_type="cancellation",
+        amount=0,
+        reason=reason,
+        refund_method=None,
+        card_last_four=None,
+        status="completed",
+        pnr=booking.pnr,
+    ))
+
+    payment_result = await db.execute(
+        select(Payment).where(Payment.booking_id == booking.id)
+    )
+    payment = payment_result.scalar_one_or_none()
+    refund_amount = 0.0
+
+    if payment and payment.amount > 0:
+        refund_amount = payment.amount
+        refund_method = None
+        card_last_four = None
+
+        if payment.card_last_four:
+            try:
+                cards = await card_service.list_cards(str(booking.user_id))
+                for c in cards:
+                    if c["card_last_four"] == payment.card_last_four:
+                        await card_service.credit(
+                            card_id=c["id"],
+                            amount=payment.amount,
+                            reference_id=str(booking.id),
+                            description=f"Refund - admin cancelled {booking.pnr}",
+                        )
+                        refund_method = "card"
+                        card_last_four = payment.card_last_four
+                        break
+            except Exception:
+                pass
+        elif payment.method == "points":
+            points_back = int(payment.amount / DOLLARS_PER_POINT)
+            acct_result = await db.execute(
+                select(LoyaltyAccount).where(LoyaltyAccount.user_id == booking.user_id)
+            )
+            account = acct_result.scalar_one_or_none()
+            if account:
+                account.points += points_back
+                db.add(LoyaltyTransaction(
+                    account_id=account.id, points=points_back,
+                    transaction_type="refund", source=f"Admin cancelled {booking.pnr}",
+                ))
+            refund_method = "points"
+
+        db.add(RefundRecord(
+            booking_id=booking.id,
+            user_id=booking.user_id,
+            action_type="refund",
+            amount=payment.amount,
+            reason=f"Refund for cancellation",
+            refund_method=refund_method or "card",
+            card_last_four=card_last_four,
+            status="completed",
+            pnr=booking.pnr,
+        ))
+
     await db.commit()
 
     await send_email(
@@ -282,10 +450,10 @@ async def admin_cancel_booking(
         subject=f"Booking Cancelled - PNR {booking.pnr}",
         body=(
             f"Dear {booking.passenger_name},\n\n"
-            f"Your booking (PNR: {booking.pnr}) has been cancelled by administration.\n"
-            f"Reason: {body.reason or 'Administrative action'}\n\n"
-            f"A refund will be processed automatically.\n\n"
-            f"We apologize for the inconvenience."
+            f"Your booking (PNR: {booking.pnr}) has been cancelled.\n"
+            f"Reason: {reason}\n\n"
+            + (f"A refund of ${refund_amount:.2f} has been processed to your original payment method.\n\n" if refund_amount > 0 else "")
+            + f"We apologize for the inconvenience."
         ),
     )
 
@@ -293,23 +461,34 @@ async def admin_cancel_booking(
         "status": "cancelled",
         "booking_id": booking_id,
         "pnr": booking.pnr,
-        "reason": body.reason or "Administrative action",
+        "refund_amount": refund_amount,
+        "reason": reason,
     }
 
 
 @router.get("/flights")
 async def list_all_flights(
     status: str | None = None,
+    date: str | None = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(10, ge=1, le=100),
     search: str = Query("", description="Search by flight number, origin, or destination"),
     current_user: dict = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ):
+    from ..models.flight import FlightCancellation
+    from .flights import flight_operates_on
+    from datetime import date as date_type
+
     query = select(Flight)
     count_query = select(func.count(Flight.id))
     conditions = []
-    if status:
+
+    target_date = None
+    if date:
+        target_date = date_type.fromisoformat(date)
+
+    if status and not target_date:
         conditions.append(Flight.status == status)
     if search:
         conditions.append(or_(
@@ -321,13 +500,40 @@ async def list_all_flights(
         query = query.where(and_(*conditions))
         count_query = count_query.where(and_(*conditions))
 
-    total = (await db.execute(count_query)).scalar() or 0
-    result = await db.execute(
-        query.order_by(Flight.departure.desc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
-    )
-    flights = result.scalars().all()
+    if target_date:
+        all_result = await db.execute(query.order_by(Flight.departure.desc()))
+        all_flights = [f for f in all_result.scalars().all() if flight_operates_on(f, target_date)]
+
+        cancel_result = await db.execute(
+            select(FlightCancellation.flight_id).where(FlightCancellation.cancelled_date == target_date)
+        )
+        cancelled_ids = set(cancel_result.scalars().all())
+
+        if status == "cancelled":
+            all_flights = [f for f in all_flights if f.status == "cancelled" or f.id in cancelled_ids]
+        elif status == "scheduled":
+            all_flights = [f for f in all_flights if f.status != "cancelled" and f.id not in cancelled_ids]
+
+        total = len(all_flights)
+        start = (page - 1) * page_size
+        flights = all_flights[start:start + page_size]
+    else:
+        total = (await db.execute(count_query)).scalar() or 0
+        result = await db.execute(
+            query.order_by(Flight.departure.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        flights = result.scalars().all()
+        cancelled_ids = set()
+
+    if target_date:
+        cancelled_count = len([f for f in all_flights if f.status == "cancelled" or f.id in cancelled_ids])
+        scheduled_count = total - cancelled_count
+    else:
+        scheduled_count = (await db.execute(select(func.count(Flight.id)).where(Flight.status == "scheduled"))).scalar() or 0
+        cancelled_count = (await db.execute(select(func.count(Flight.id)).where(Flight.status == "cancelled"))).scalar() or 0
+
     return {
         "items": [
             {
@@ -337,15 +543,18 @@ async def list_all_flights(
                 "destination": f.destination,
                 "departure": f.departure.isoformat(),
                 "arrival": f.arrival.isoformat(),
-                "status": f.status,
+                "status": "cancelled" if f.id in cancelled_ids else f.status,
                 "aircraft": f.aircraft,
                 "available_seats": f.available_seats,
                 "total_seats": f.total_seats,
                 "days_of_week": f.days_of_week,
+                "cancelled_for_date": f.id in cancelled_ids,
             }
             for f in flights
         ],
         "total": total,
+        "scheduled_count": scheduled_count,
+        "cancelled_count": cancelled_count,
         "page": page,
         "page_size": page_size,
         "total_pages": max(1, -(-total // page_size)),
@@ -543,12 +752,24 @@ async def update_user_tier(
     previous_tier = user.loyalty_tier
     user.loyalty_tier = body.tier
 
+    tier_minimums = TIER_THRESHOLDS
+
     acct_result = await db.execute(
         select(LoyaltyAccount).where(LoyaltyAccount.user_id == UUID(user_id))
     )
     account = acct_result.scalar_one_or_none()
     if account:
         account.tier = body.tier
+        min_points = tier_minimums.get(body.tier, 0)
+        if account.points < min_points:
+            points_added = min_points - account.points
+            account.points = min_points
+            db.add(LoyaltyTransaction(
+                account_id=account.id,
+                points=points_added,
+                transaction_type="adjustment",
+                source=f"Tier upgrade to {body.tier}",
+            ))
 
     await db.commit()
 

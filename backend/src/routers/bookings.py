@@ -8,12 +8,15 @@ from pydantic import BaseModel
 from sqlalchemy import select, func, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..constants import DOLLARS_PER_POINT, POINTS_PER_DOLLAR
 from ..database import get_db
 from ..models.booking import Booking
 from ..models.flight import Flight
 from ..models.user import User
 from ..middleware.auth import require_auth
 from ..services.saas.automail import send_email
+from ..models.loyalty import LoyaltyAccount, LoyaltyTransaction
+from .flights import project_flight_to_date
 
 router = APIRouter(prefix="/api/v1/bookings", tags=["bookings"])
 
@@ -41,6 +44,11 @@ class BookingResponse(BaseModel):
     passenger_name: str
     passenger_email: str
     cabin_class: str = "economy"
+    travel_date: str | None = None
+    flight_number: str | None = None
+    origin: str | None = None
+    destination: str | None = None
+    departure: str | None = None
     created_at: str
 
 
@@ -93,6 +101,14 @@ async def create_booking(
         body=f"Dear {body.passenger_name},\n\nYour booking is confirmed.\nPNR: {booking.pnr}\nFlight: {body.flight_id}\n\nThank you for choosing AutoPilot Airlines.",
     )
 
+
+    dep_str = None
+    if travel_d and flight:
+        dep, _ = project_flight_to_date(flight, travel_d)
+        dep_str = dep.isoformat()
+    elif flight and flight.departure:
+        dep_str = flight.departure.isoformat()
+
     return BookingResponse(
         id=str(booking.id),
         flight_id=str(booking.flight_id),
@@ -102,6 +118,11 @@ async def create_booking(
         passenger_name=booking.passenger_name,
         passenger_email=booking.passenger_email,
         cabin_class=booking.cabin_class or "economy",
+        travel_date=booking.travel_date.isoformat() if booking.travel_date else None,
+        flight_number=flight.flight_number if flight else None,
+        origin=flight.origin if flight else None,
+        destination=flight.destination if flight else None,
+        departure=dep_str,
         created_at=booking.created_at.isoformat(),
     )
 
@@ -111,13 +132,24 @@ async def list_bookings(
     current_user: dict = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ):
+
+
     result = await db.execute(
-        select(Booking).where(Booking.user_id == UUID(current_user["sub"]))
+        select(Booking, Flight)
+        .join(Flight, Booking.flight_id == Flight.id)
+        .where(Booking.user_id == UUID(current_user["sub"]))
         .order_by(Booking.created_at.desc())
     )
-    bookings = result.scalars().all()
-    return [
-        BookingResponse(
+    rows = result.all()
+    responses = []
+    for b, f in rows:
+        dep_str = None
+        if b.travel_date and f:
+            dep, _ = project_flight_to_date(f, b.travel_date)
+            dep_str = dep.isoformat()
+        elif f and f.departure:
+            dep_str = f.departure.isoformat()
+        responses.append(BookingResponse(
             id=str(b.id),
             flight_id=str(b.flight_id),
             user_id=str(b.user_id),
@@ -126,10 +158,14 @@ async def list_bookings(
             passenger_name=b.passenger_name,
             passenger_email=b.passenger_email,
             cabin_class=b.cabin_class or "economy",
+            travel_date=b.travel_date.isoformat() if b.travel_date else None,
+            flight_number=f.flight_number if f else None,
+            origin=f.origin if f else None,
+            destination=f.destination if f else None,
+            departure=dep_str,
             created_at=b.created_at.isoformat(),
-        )
-        for b in bookings
-    ]
+        ))
+    return responses
 
 
 STATIC_COUPONS = {
@@ -548,6 +584,15 @@ async def lookup_booking(
     booking = result.scalar_one_or_none()
     if not booking:
         raise HTTPException(status_code=404, detail="Booking not found")
+
+    flight_result = await db.execute(select(Flight).where(Flight.id == booking.flight_id))
+    flight = flight_result.scalar_one_or_none()
+    dep_str = None
+    if booking.travel_date and flight:
+        dep, _ = project_flight_to_date(flight, booking.travel_date)
+        dep_str = dep.isoformat()
+    elif flight and flight.departure:
+        dep_str = flight.departure.isoformat()
     return BookingResponse(
         id=str(booking.id),
         flight_id=str(booking.flight_id),
@@ -557,6 +602,11 @@ async def lookup_booking(
         passenger_name=booking.passenger_name,
         passenger_email=booking.passenger_email,
         cabin_class=booking.cabin_class or "economy",
+        travel_date=booking.travel_date.isoformat() if booking.travel_date else None,
+        flight_number=flight.flight_number if flight else None,
+        origin=flight.origin if flight else None,
+        destination=flight.destination if flight else None,
+        departure=dep_str,
         created_at=booking.created_at.isoformat(),
     )
 
@@ -571,6 +621,15 @@ async def get_booking(
     booking = result.scalar_one_or_none()
     if not booking:
         raise HTTPException(status_code=404, detail="Booking not found")
+
+    flight_result = await db.execute(select(Flight).where(Flight.id == booking.flight_id))
+    flight = flight_result.scalar_one_or_none()
+    dep_str = None
+    if booking.travel_date and flight:
+        dep, _ = project_flight_to_date(flight, booking.travel_date)
+        dep_str = dep.isoformat()
+    elif flight and flight.departure:
+        dep_str = flight.departure.isoformat()
     return BookingResponse(
         id=str(booking.id),
         flight_id=str(booking.flight_id),
@@ -580,6 +639,11 @@ async def get_booking(
         passenger_name=booking.passenger_name,
         passenger_email=booking.passenger_email,
         cabin_class=booking.cabin_class or "economy",
+        travel_date=booking.travel_date.isoformat() if booking.travel_date else None,
+        flight_number=flight.flight_number if flight else None,
+        origin=flight.origin if flight else None,
+        destination=flight.destination if flight else None,
+        departure=dep_str,
         created_at=booking.created_at.isoformat(),
     )
 
@@ -614,7 +678,7 @@ async def get_booking_receipt(
     taxes = round(base_fare * 0.12, 2)
 
     coupon_discount = 0.0
-    if booking.coupon_code and payment:
+    if booking.coupon_code:
         coupon_info = STATIC_COUPONS.get(booking.coupon_code)
         if not coupon_info:
             for ac in ADMIN_COUPONS:
@@ -623,12 +687,16 @@ async def get_booking_receipt(
                     break
         if coupon_info:
             coupon_discount = round((base_fare + taxes) * coupon_info["discount_percent"] / 100, 2)
+        elif payment:
+            computed_total = round(base_fare + taxes + baggage_total, 2)
+            if payment.amount < computed_total:
+                coupon_discount = round(computed_total - payment.amount, 2)
 
     subtotal = round(base_fare + taxes, 2)
     points_value = 0.0
     points_used = 0
     if payment and payment.method in ("points", "points+card"):
-        from ..models.loyalty import LoyaltyTransaction
+
         txn_result = await db.execute(
             select(LoyaltyTransaction).where(
                 LoyaltyTransaction.source == f"Booking {booking_id}",
@@ -638,12 +706,19 @@ async def get_booking_receipt(
         txn = txn_result.scalar_one_or_none()
         if txn:
             points_used = abs(txn.points)
-            points_value = round(points_used * 0.01, 2)
+            points_value = round(points_used * DOLLARS_PER_POINT, 2)
+
+    if payment and coupon_discount == 0:
+        expected = round(base_fare + taxes + baggage_total - points_value, 2)
+        if abs(payment.amount - expected) > 0.01:
+            base_fare = round(payment.amount + points_value - baggage_total, 2)
+            taxes = 0.0
+            subtotal = round(base_fare, 2)
 
     amount_paid = payment.amount if payment else 0.0
     points_earned = 0
     if payment:
-        from ..models.loyalty import LoyaltyTransaction
+
         earn_result = await db.execute(
             select(LoyaltyTransaction).where(
                 LoyaltyTransaction.source == f"Booking {booking_id}",
@@ -654,9 +729,23 @@ async def get_booking_receipt(
         if earn_txn:
             points_earned = earn_txn.points
         else:
-            points_earned = int((amount_paid - points_value) * 10)
+
+            acct_result = await db.execute(
+                select(LoyaltyAccount).where(LoyaltyAccount.user_id == booking.user_id)
+            )
+            acct = acct_result.scalar_one_or_none()
+            rates = {"bronze": 1, "silver": 1, "gold": 1.5, "platinum": 3}
+            rate = rates.get(acct.tier, 1) if acct else 1
+            points_earned = int((amount_paid - points_value) * rate)
     else:
-        points_earned = int(subtotal * 10)
+        from ..models.loyalty import LoyaltyAccount
+        acct_result = await db.execute(
+            select(LoyaltyAccount).where(LoyaltyAccount.user_id == booking.user_id)
+        )
+        acct = acct_result.scalar_one_or_none()
+        rates = {"bronze": 1, "silver": 1, "gold": 1.5, "platinum": 3}
+        rate = rates.get(acct.tier, 1) if acct else 1
+        points_earned = int(subtotal * rate)
 
     return {
         "booking": {
@@ -717,10 +806,47 @@ async def cancel_booking(
     current_user: dict = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ):
+    from ..models.payment import Payment, RefundRecord
+
     result = await db.execute(select(Booking).where(Booking.id == UUID(booking_id)))
     booking = result.scalar_one_or_none()
     if not booking:
         raise HTTPException(status_code=404, detail="Booking not found")
+
+    payment_result = await db.execute(
+        select(Payment).where(Payment.booking_id == booking.id)
+    )
+    payment = payment_result.scalar_one_or_none()
+
     booking.status = "cancelled"
+
+    cancel_record = RefundRecord(
+        booking_id=booking.id,
+        user_id=UUID(current_user["sub"]),
+        action_type="cancellation",
+        amount=0,
+        reason="Cancelled via booking management",
+        refund_method=None,
+        card_last_four=None,
+        status="completed",
+        pnr=booking.pnr,
+    )
+    db.add(cancel_record)
+
+    if payment and payment.amount > 0:
+        refund_record = RefundRecord(
+            booking_id=booking.id,
+            user_id=UUID(current_user["sub"]),
+            action_type="refund",
+            amount=payment.amount,
+            reason="Refund for cancellation",
+            refund_method="card" if payment.card_last_four else "none",
+            card_last_four=payment.card_last_four,
+            status="completed",
+            pnr=booking.pnr,
+        )
+        db.add(refund_record)
+
     await db.commit()
+
     return {"status": "cancelled", "pnr": booking.pnr}

@@ -1,9 +1,11 @@
 import random
 import string
+from datetime import date
 
 from langchain_core.tools import tool
 
 from ..context import get_current_user_id
+from ...constants import DOLLARS_PER_POINT
 
 
 @tool
@@ -70,14 +72,53 @@ async def get_booking_quote_tool(
         )
         loyalty = loyalty_result.scalar_one_or_none()
         points_available = loyalty.points if loyalty else 0
-        max_points_for_booking = min(points_available, int(total / 0.01))
-        points_value = round(max_points_for_booking * 0.01, 2)
+        max_points_for_booking = min(points_available, int(total / DOLLARS_PER_POINT))
+        points_value = round(max_points_for_booking * DOLLARS_PER_POINT, 2)
 
     cards = []
     try:
         cards = await card_service.list_cards(user_id)
     except Exception:
         pass
+
+    from ...routers.bookings import (
+        STATIC_COUPONS, ADMIN_COUPONS, BULK_TIERS,
+        _get_active_holiday_coupons, evaluate_conditions, TIER_ORDER,
+    )
+
+    user_tier = loyalty.tier if loyalty else "bronze"
+    available_coupons = []
+
+    async with async_session() as db2:
+        for code, info in STATIC_COUPONS.items():
+            err = await evaluate_conditions(
+                info.get("conditions", {}), code, user_id, user_tier,
+                flight, cabin_class, total, db2,
+            )
+            if not err:
+                savings = round(total * info["discount_percent"] / 100, 2)
+                available_coupons.append((code, info["discount_percent"], info["description"], savings))
+
+        for ac in ADMIN_COUPONS:
+            err = await evaluate_conditions(
+                ac.get("conditions", {}), ac["code"], user_id, user_tier,
+                flight, cabin_class, total, db2,
+            )
+            if not err:
+                savings = round(total * ac["discount_percent"] / 100, 2)
+                available_coupons.append((ac["code"], ac["discount_percent"], ac["description"], savings))
+
+        holiday_coupons = _get_active_holiday_coupons()
+        for code, info in holiday_coupons.items():
+            savings = round(total * info["discount_percent"] / 100, 2)
+            available_coupons.append((code, info["discount_percent"], info["description"], savings))
+
+        for min_pax, discount, bulk_code, description in BULK_TIERS:
+            if num_passengers >= min_pax:
+                savings = round(total * discount / 100, 2)
+                available_coupons.append((bulk_code, discount, description, savings))
+
+    available_coupons.sort(key=lambda x: x[3], reverse=True)
 
     lines = [
         f"Booking Quote for {flight.flight_number}:",
@@ -105,13 +146,20 @@ async def get_booking_quote_tool(
         lines.append(f"  No saved cards. User needs to add a payment method.")
 
     if points_available > 0:
-        lines.append(f"  Loyalty points: {points_available:,} available (worth ${points_available * 0.01:.2f})")
+        lines.append(f"  Loyalty points: {points_available:,} available (worth ${points_available * DOLLARS_PER_POINT:.2f})")
         if points_value >= total:
-            lines.append(f"  → Can cover full fare with {int(total / 0.01):,} points")
+            lines.append(f"  → Can cover full fare with {int(total / DOLLARS_PER_POINT):,} points")
         else:
             lines.append(f"  → Can offset up to ${points_value:.2f} from card charge")
     else:
         lines.append(f"  No loyalty points available.")
+
+    if available_coupons:
+        lines.append(f"")
+        lines.append(f"Available coupons (best first):")
+        for code, pct, desc, savings in available_coupons:
+            lines.append(f"  - {code}: {pct}% off — {desc} (saves ${savings:.2f})")
+        lines.append(f"  Suggest the best coupon to the user. Pass coupon_code to create_booking if they accept.")
 
     lines.append(f"")
     lines.append(f"Present this quote to the user. After confirmation, call create_booking then process_payment.")
@@ -122,11 +170,12 @@ async def get_booking_quote_tool(
 @tool
 async def create_booking_tool(
     flight_id: str, passenger_name: str, passenger_email: str,
-    travel_date: str | None = None, cabin_class: str = "economy"
+    travel_date: str | None = None, cabin_class: str = "economy",
+    coupon_code: str | None = None,
 ) -> str:
     """Create a new flight booking for a passenger. Call get_booking_quote first to show the user the price.
     After this tool succeeds, immediately process payment using process_payment with the returned PNR/booking_id.
-    cabin_class options: economy, premium_economy, business."""
+    cabin_class options: economy, premium_economy, business. Optionally pass a validated coupon_code."""
     from ...database import async_session
     from ...models.booking import Booking
     from ...models.flight import Flight
@@ -171,6 +220,7 @@ async def create_booking_tool(
             passenger_email=passenger_email,
             travel_date=target_date,
             cabin_class=cabin_class,
+            coupon_code=coupon_code.upper() if coupon_code else None,
         )
         db.add(booking)
         await db.commit()
@@ -201,14 +251,16 @@ async def create_booking_tool(
 @tool
 async def get_cancellation_quote_tool(booking_id: str) -> str:
     """Get a cancellation quote showing the refund amount, where it will be credited, and any fees.
-    Call this BEFORE cancel_booking to show the user what they'll receive. After user confirms, call cancel_booking."""
+    Call this BEFORE cancel_booking to show the user what they'll receive. After user confirms, call cancel_booking.
+    If the flight is recurring and the user has multiple bookings on it, this will inform about all upcoming dates
+    so you can ask whether to cancel just one date or all."""
     from ...database import async_session
     from ...models.booking import Booking
     from ...models.flight import Flight
     from ...models.payment import Payment
     from ...models.user import User
     from ...services.card_service import card_service
-    from sqlalchemy import select
+    from sqlalchemy import select, and_
     from uuid import UUID
 
     user_id = get_current_user_id()
@@ -242,6 +294,18 @@ async def get_cancellation_quote_tool(booking_id: str) -> str:
         user = user_result.scalar_one_or_none()
         user_tier = user.loyalty_tier.lower() if user and user.loyalty_tier else "bronze"
 
+        other_bookings = []
+        if flight and flight.days_of_week:
+            other_result = await db.execute(
+                select(Booking).where(and_(
+                    Booking.flight_id == flight.id,
+                    Booking.user_id == UUID(user_id),
+                    Booking.status.in_(["confirmed", "checked_in"]),
+                    Booking.id != booking.id,
+                ))
+            )
+            other_bookings = list(other_result.scalars().all())
+
     refund_amount = payment.amount if payment else 0
     cancellation_fee = 0.0
     if user_tier in ("gold", "platinum"):
@@ -259,9 +323,21 @@ async def get_cancellation_quote_tool(booking_id: str) -> str:
         f"Cabin: {(booking.cabin_class or 'economy').replace('_', ' ').title()}",
         f"Current Status: {booking.status.capitalize()}",
         f"",
-        f"Refund breakdown:",
-        f"  Original payment: ${refund_amount:.2f}",
     ]
+
+    if flight and flight.days_of_week and other_bookings:
+        lines.append(f"⚠ This is a recurring flight (operates on days: {flight.days_of_week}).")
+        lines.append(f"You have {len(other_bookings) + 1} active bookings on this flight:")
+        lines.append(f"  • {booking.travel_date.isoformat() if booking.travel_date else 'N/A'} — PNR {booking.pnr} (this one)")
+        for ob in sorted(other_bookings, key=lambda b: b.travel_date or date.min):
+            lines.append(f"  • {ob.travel_date.isoformat() if ob.travel_date else 'N/A'} — PNR {ob.pnr}")
+        lines.append(f"")
+        lines.append(f"Ask the user: cancel only {booking.travel_date.isoformat() if booking.travel_date else 'this booking'}, or cancel ALL dates?")
+        lines.append(f"If all, call cancel_booking with cancel_all_recurring=true.")
+        lines.append(f"")
+
+    lines.append(f"Refund breakdown (this booking):")
+    lines.append(f"  Original payment: ${refund_amount:.2f}")
 
     if cancellation_fee > 0:
         lines.append(f"  Cancellation fee: -${cancellation_fee:.2f}")
@@ -289,7 +365,7 @@ async def get_cancellation_quote_tool(booking_id: str) -> str:
             lines.append(f"Refund to: Card ••••{payment.card_last_four}")
         lines.append(f"Processing time: Immediate credit upon confirmation")
     elif payment and payment.method == "points":
-        points_back = int(refund_amount / 0.01)
+        points_back = int(refund_amount / DOLLARS_PER_POINT)
         lines.append(f"Refund to: Loyalty points ({points_back:,} points)")
         lines.append(f"Processing time: Immediate")
     else:
@@ -302,14 +378,16 @@ async def get_cancellation_quote_tool(booking_id: str) -> str:
 
 
 @tool
-async def cancel_booking_tool(booking_id: str) -> str:
-    """Cancel an existing booking and process the refund. Call get_cancellation_quote first to show the user what they'll receive."""
+async def cancel_booking_tool(booking_id: str, reason: str = "Customer requested cancellation", cancel_all_recurring: bool = False) -> str:
+    """Cancel an existing booking and process the refund. Call get_cancellation_quote first to show the user what they'll receive.
+    If the flight is recurring and the user wants to cancel all dates, set cancel_all_recurring=True."""
     from ...database import async_session
     from ...models.booking import Booking
-    from ...models.payment import Payment
+    from ...models.flight import Flight
+    from ...models.payment import Payment, RefundRecord
     from ...models.loyalty import LoyaltyAccount, LoyaltyTransaction
     from ...services.card_service import card_service
-    from sqlalchemy import select
+    from sqlalchemy import select, and_
     from uuid import UUID
 
     user_id = get_current_user_id()
@@ -328,61 +406,115 @@ async def cancel_booking_tool(booking_id: str) -> str:
         if booking.status == "cancelled":
             return f"Booking {booking.pnr} is already cancelled."
 
-        payment_result = await db.execute(
-            select(Payment).where(Payment.booking_id == booking.id)
-        )
-        payment = payment_result.scalar_one_or_none()
+        bookings_to_cancel = [booking]
 
-        refund_amount = payment.amount if payment else 0
-        credited_card = None
-        points_refunded = 0
-
-        if refund_amount > 0 and payment:
-            if payment.card_last_four:
-                cards = await card_service.list_cards(user_id)
-                for c in cards:
-                    if c["card_last_four"] == payment.card_last_four:
-                        await card_service.credit(
-                            card_id=c["id"],
-                            amount=refund_amount,
-                            reference_id=str(booking.id),
-                            description=f"Cancellation refund for {booking.pnr}",
-                        )
-                        credited_card = c
-                        break
-            elif payment.method == "points":
-                points_refunded = int(refund_amount / 0.01)
-                acct_result = await db.execute(
-                    select(LoyaltyAccount).where(LoyaltyAccount.user_id == UUID(user_id))
-                )
-                account = acct_result.scalar_one_or_none()
-                if account:
-                    account.points += points_refunded
-                    db.add(LoyaltyTransaction(
-                        account_id=account.id, points=points_refunded,
-                        transaction_type="refund", source=f"Cancellation {booking.pnr}",
+        if cancel_all_recurring:
+            flight_result = await db.execute(select(Flight).where(Flight.id == booking.flight_id))
+            flight = flight_result.scalar_one_or_none()
+            if flight and flight.days_of_week:
+                other_result = await db.execute(
+                    select(Booking).where(and_(
+                        Booking.flight_id == flight.id,
+                        Booking.user_id == UUID(user_id),
+                        Booking.status.in_(["confirmed", "checked_in"]),
+                        Booking.id != booking.id,
                     ))
+                )
+                bookings_to_cancel.extend(other_result.scalars().all())
 
-        booking.status = "cancelled"
+        total_refund = 0.0
+        cancelled_pnrs = []
+
+        for bk in bookings_to_cancel:
+            if bk.status == "cancelled":
+                continue
+
+            payment_result = await db.execute(
+                select(Payment).where(Payment.booking_id == bk.id)
+            )
+            payment = payment_result.scalar_one_or_none()
+
+            refund_amount = payment.amount if payment else 0
+            refund_method = None
+
+            if refund_amount > 0 and payment:
+                if payment.card_last_four:
+                    cards = await card_service.list_cards(user_id)
+                    for c in cards:
+                        if c["card_last_four"] == payment.card_last_four:
+                            await card_service.credit(
+                                card_id=c["id"],
+                                amount=refund_amount,
+                                reference_id=str(bk.id),
+                                description=f"Cancellation refund for {bk.pnr}",
+                            )
+                            refund_method = "card"
+                            break
+                elif payment.method == "points":
+                    points_refunded = int(refund_amount / DOLLARS_PER_POINT)
+                    refund_method = "points"
+                    acct_result = await db.execute(
+                        select(LoyaltyAccount).where(LoyaltyAccount.user_id == UUID(user_id))
+                    )
+                    account = acct_result.scalar_one_or_none()
+                    if account:
+                        account.points += points_refunded
+                        db.add(LoyaltyTransaction(
+                            account_id=account.id, points=points_refunded,
+                            transaction_type="refund", source=f"Cancellation {bk.pnr}",
+                        ))
+
+            bk.status = "cancelled"
+            total_refund += refund_amount
+            cancelled_pnrs.append(bk.pnr)
+
+            cancel_record = RefundRecord(
+                booking_id=bk.id,
+                user_id=UUID(user_id),
+                action_type="cancellation",
+                amount=0,
+                reason=reason,
+                refund_method=None,
+                card_last_four=None,
+                status="completed",
+                pnr=bk.pnr,
+            )
+            db.add(cancel_record)
+
+            if refund_amount > 0:
+                refund_record = RefundRecord(
+                    booking_id=bk.id,
+                    user_id=UUID(user_id),
+                    action_type="refund",
+                    amount=refund_amount,
+                    reason=f"Refund for cancellation",
+                    refund_method=refund_method or "card",
+                    card_last_four=payment.card_last_four if payment else None,
+                    status="completed",
+                    pnr=bk.pnr,
+                )
+                db.add(refund_record)
+
         await db.commit()
 
-    lines = [
-        f"Booking cancelled successfully.",
-        f"PNR: {booking.pnr}",
-        f"Status: Cancelled",
-        f"",
-    ]
+    if len(cancelled_pnrs) > 1:
+        lines = [
+            f"All {len(cancelled_pnrs)} bookings cancelled successfully.",
+            f"PNRs: {', '.join(cancelled_pnrs)}",
+            f"Status: Cancelled",
+            f"",
+        ]
+    else:
+        lines = [
+            f"Booking cancelled successfully.",
+            f"PNR: {booking.pnr}",
+            f"Status: Cancelled",
+            f"",
+        ]
 
-    if refund_amount > 0:
-        lines.append(f"Refund: ${refund_amount:.2f}")
-        if credited_card:
-            lines.append(f"Credited to: {credited_card['card_brand'].capitalize()} ••••{credited_card['card_last_four']}")
-            lines.append(f"The refund has been applied immediately and is available on your card now.")
-        elif points_refunded > 0:
-            lines.append(f"Refunded: {points_refunded:,} loyalty points")
-            lines.append(f"Points are available in your account immediately.")
-        else:
-            lines.append(f"Refund will be processed within 5-7 business days.")
+    if total_refund > 0:
+        lines.append(f"Total refund: ${total_refund:.2f}")
+        lines.append(f"Refund has been processed and credited immediately.")
     else:
         lines.append(f"No payment was on record — no refund to process.")
 
@@ -767,7 +899,7 @@ async def get_connecting_flight_quote_tool(
         lines.append(f"  No saved cards.")
 
     if points_available > 0:
-        lines.append(f"  Loyalty points: {points_available:,} available (worth ${points_available * 0.01:.2f})")
+        lines.append(f"  Loyalty points: {points_available:,} available (worth ${points_available * DOLLARS_PER_POINT:.2f})")
     else:
         lines.append(f"  No loyalty points available.")
 

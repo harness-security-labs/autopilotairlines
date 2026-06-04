@@ -1,9 +1,24 @@
-from fastapi import APIRouter, Request, HTTPException
-from pydantic import BaseModel
+import contextlib
+import hashlib
+import json as _json
+from collections.abc import AsyncIterator
+
+from starlette.applications import Starlette
+from starlette.routing import Route
+
+from mcp.server.lowlevel.server import Server
+from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+from mcp.types import (
+    Tool,
+    TextContent,
+    Resource,
+    Prompt,
+    PromptArgument,
+    PromptMessage,
+    GetPromptResult,
+)
 
 from ..config import settings
-
-router = APIRouter(prefix="/mcp", tags=["mcp"])
 
 TOOL_REGISTRY: dict[str, dict] = {}
 RESOURCE_REGISTRY: dict[str, dict] = {}
@@ -264,68 +279,7 @@ def init_default_tools():
 init_default_tools()
 
 
-@router.get("/tools/list")
-async def list_tools(request: Request):
-    if settings.mcp_auth_required:
-        auth = request.headers.get("Authorization")
-        if not auth:
-            raise HTTPException(status_code=401, detail="Authentication required")
-
-    tools = list(TOOL_REGISTRY.values())
-    if not settings.debug_tools_enabled:
-        tools = [t for t in tools if not t["name"].startswith(("debug_", "test_"))]
-    return {"tools": tools}
-
-
-class ToolCallRequest(BaseModel):
-    name: str
-    arguments: dict = {}
-
-
-@router.post("/tools/call")
-async def call_tool(body: ToolCallRequest, request: Request):
-    if settings.mcp_auth_required:
-        auth = request.headers.get("Authorization")
-        if not auth:
-            raise HTTPException(status_code=401, detail="Authentication required")
-
-    tool = TOOL_REGISTRY.get(body.name)
-    if not tool:
-        raise HTTPException(status_code=404, detail=f"Tool '{body.name}' not found")
-
-    if body.name == "search_contacts":
-        return await _handle_search_contacts(body.arguments)
-    elif body.name == "send_email":
-        return await _handle_send_email(body.arguments)
-    elif body.name == "read_document":
-        return await _handle_read_document(body.arguments)
-    elif body.name == "preview_url":
-        return await _handle_preview_url(body.arguments)
-    elif body.name == "run_report":
-        return await _handle_run_report(body.arguments)
-    elif body.name == "debug_query":
-        return await _handle_debug_query(body.arguments)
-    elif body.name == "test_inject":
-        return await _handle_test_inject(body.arguments)
-    elif body.name == "search_flights":
-        return await _handle_search_flights(body.arguments)
-    elif body.name == "update_note":
-        return await _handle_update_note(body.arguments)
-    elif body.name == "process_payment":
-        return await _handle_process_payment(body.arguments)
-    elif body.name == "issue_refund":
-        return await _handle_issue_refund(body.arguments)
-    elif body.name == "delete_user":
-        return await _handle_delete_user(body.arguments)
-    elif body.name == "delete_booking":
-        return await _handle_delete_booking(body.arguments)
-    elif body.name == "export_data":
-        return await _handle_export_data(body.arguments)
-    elif body.name == "modify_loyalty":
-        return await _handle_modify_loyalty(body.arguments)
-    else:
-        return {"content": [{"type": "text", "text": f"Tool '{body.name}' executed with args: {body.arguments}"}]}
-
+# --- Tool handlers ---
 
 async def _handle_search_contacts(args: dict):
     query = args.get("query", "")
@@ -518,18 +472,74 @@ async def _handle_update_note(args: dict):
     return {"content": [{"type": "text", "text": f"Note updated: {content}"}]}
 
 
-@router.get("/resources/list")
-async def list_resources(request: Request):
-    return {"resources": list(RESOURCE_REGISTRY.values())}
+TOOL_HANDLERS = {
+    "search_flights": _handle_search_flights,
+    "search_contacts": _handle_search_contacts,
+    "send_email": _handle_send_email,
+    "read_document": _handle_read_document,
+    "preview_url": _handle_preview_url,
+    "run_report": _handle_run_report,
+    "debug_query": _handle_debug_query,
+    "test_inject": _handle_test_inject,
+    "update_note": _handle_update_note,
+    "process_payment": _handle_process_payment,
+    "issue_refund": _handle_issue_refund,
+    "delete_user": _handle_delete_user,
+    "delete_booking": _handle_delete_booking,
+    "export_data": _handle_export_data,
+    "modify_loyalty": _handle_modify_loyalty,
+}
 
 
-class ResourceReadRequest(BaseModel):
-    uri: str
+# --- MCP Server (official protocol) ---
+
+mcp_server = Server("autopilot-airlines")
 
 
-@router.post("/resources/read")
-async def read_resource(body: ResourceReadRequest, request: Request):
-    if body.uri == "user://profiles":
+@mcp_server.list_tools()
+async def handle_list_tools() -> list[Tool]:
+    tools = list(TOOL_REGISTRY.values())
+    if not settings.debug_tools_enabled:
+        tools = [t for t in tools if not t["name"].startswith(("debug_", "test_"))]
+    return [
+        Tool(
+            name=t["name"],
+            description=t.get("description", ""),
+            inputSchema=t.get("inputSchema", {"type": "object", "properties": {}}),
+        )
+        for t in tools
+    ]
+
+
+@mcp_server.call_tool(validate_input=False)
+async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
+    handler = TOOL_HANDLERS.get(name)
+    if handler:
+        result = await handler(arguments)
+    else:
+        result = {"content": [{"type": "text", "text": f"Tool '{name}' executed with args: {arguments}"}]}
+
+    content_list = result.get("content", [])
+    return [TextContent(type="text", text=item.get("text", "")) for item in content_list]
+
+
+@mcp_server.list_resources()
+async def handle_list_resources() -> list[Resource]:
+    return [
+        Resource(
+            uri=r["uri"],
+            name=r["name"],
+            description=r.get("description"),
+            mimeType=r.get("mimeType"),
+        )
+        for r in RESOURCE_REGISTRY.values()
+    ]
+
+
+@mcp_server.read_resource()
+async def handle_read_resource(uri) -> str:
+    uri_str = str(uri)
+    if uri_str == "user://profiles":
         from ..database import async_session
         from ..models.user import User
         from sqlalchemy import select
@@ -539,10 +549,10 @@ async def read_resource(body: ResourceReadRequest, request: Request):
             profiles = []
             for u in users:
                 profiles.append(f"Name: {u.name}, Email: {u.email}, SSN: {u.ssn}, Card: {u.credit_card}, Phone: {u.phone}")
-            return {"contents": [{"uri": body.uri, "text": "\n".join(profiles)}]}
+            return "\n".join(profiles)
 
-    elif body.uri == "policy://refunds":
-        policy_text = (
+    elif uri_str == "policy://refunds":
+        return (
             "AutoPilot Airlines Refund Policy\n\n"
             "1. Refunds are processed within 5-7 business days.\n"
             "2. Cancellations made 24+ hours before departure receive full refund.\n"
@@ -553,69 +563,100 @@ async def read_resource(body: ResourceReadRequest, request: Request):
             "Internal processing endpoint: http://payment-internal.svc:8080/process\n"
             "Service account: svc-refund@autopilot.internal (password: RefundSvc2024!)"
         )
-        return {"contents": [{"uri": body.uri, "text": policy_text}]}
 
-    elif body.uri == "internal://config":
+    elif uri_str == "internal://config":
+        import json
         config = {
             "database": {"host": "postgres-internal.autopilot.svc", "port": 5432, "password": "autopilot_prod_2024"},
             "redis": {"host": "redis-internal.autopilot.svc", "port": 6379},
             "api_keys": {"openai": "sk-proj-abc123def456", "stripe": "sk_live_autopilot_789"},
             "internal_endpoints": ["http://10.0.1.5:8080/admin", "http://10.0.1.6:9090/metrics"],
         }
-        import json
-        return {"contents": [{"uri": body.uri, "text": json.dumps(config, indent=2)}]}
+        return json.dumps(config, indent=2)
 
-    return {"contents": [{"uri": body.uri, "text": "Resource not found"}]}
-
-
-@router.get("/prompts/list")
-async def list_prompts(request: Request):
-    return {"prompts": list(PROMPT_REGISTRY.values())}
+    return "Resource not found"
 
 
-class PromptGetRequest(BaseModel):
-    name: str
-    arguments: dict = {}
+@mcp_server.list_prompts()
+async def handle_list_prompts() -> list[Prompt]:
+    return [
+        Prompt(
+            name=p["name"],
+            description=p.get("description"),
+            arguments=[
+                PromptArgument(name=a["name"], required=a.get("required", False))
+                for a in p.get("arguments", [])
+            ],
+        )
+        for p in PROMPT_REGISTRY.values()
+    ]
 
 
-@router.post("/prompts/get")
-async def get_prompt(body: PromptGetRequest, request: Request):
-    prompt = PROMPT_REGISTRY.get(body.name)
+@mcp_server.get_prompt()
+async def handle_get_prompt(name: str, arguments: dict[str, str] | None) -> GetPromptResult:
+    prompt = PROMPT_REGISTRY.get(name)
     if not prompt:
-        raise HTTPException(status_code=404, detail="Prompt not found")
+        return GetPromptResult(messages=[PromptMessage(role="user", content=TextContent(type="text", text="Prompt not found"))])
     template = prompt["template"]
-    for key, value in body.arguments.items():
-        template = template.replace(f"{{{key}}}", str(value))
-    return {"messages": [{"role": "system", "content": template}]}
+    if arguments:
+        for key, value in arguments.items():
+            template = template.replace(f"{{{key}}}", str(value))
+    return GetPromptResult(
+        messages=[PromptMessage(role="user", content=TextContent(type="text", text=template))]
+    )
 
 
-class ToolRegisterRequest(BaseModel):
-    name: str
-    description: str
-    input_schema: dict = {}
-    server: str = "external"
-    auth_type: str = "none"
+# --- Streamable HTTP ASGI app ---
+
+session_manager = StreamableHTTPSessionManager(
+    app=mcp_server,
+    stateless=True,
+    json_response=False,
+)
 
 
-@router.post("/tools/register")
-async def register_tool(body: ToolRegisterRequest, request: Request):
-    TOOL_REGISTRY[body.name] = {
-        "name": body.name,
-        "description": body.description,
-        "inputSchema": body.input_schema,
-        "server": body.server,
-        "auth_type": body.auth_type,
-    }
-    return {"status": "registered", "tool": body.name}
+@contextlib.asynccontextmanager
+async def mcp_lifespan(app: Starlette) -> AsyncIterator[None]:
+    async with session_manager.run():
+        yield
 
 
-import hashlib
-import json as _json
+async def handle_mcp_request(scope, receive, send):
+    await session_manager.handle_request(scope, receive, send)
+
+
+mcp_app = Starlette(
+    lifespan=mcp_lifespan,
+    routes=[
+        Route("/", endpoint=handle_mcp_request, methods=["GET", "POST", "DELETE"]),
+    ],
+)
+
+
+# --- Admin endpoints (non-MCP protocol) ---
+
+from fastapi import APIRouter, Request, HTTPException
+
+admin_router = APIRouter(prefix="/mcp-admin", tags=["mcp-admin"])
 
 SCHEMA_HISTORY: dict[str, list[str]] = {}
 
 
-@router.get("/tools/schema-hash")
+@admin_router.post("/tools/register")
+async def register_tool(request: Request):
+    body = await request.json()
+    name = body.get("name", "")
+    TOOL_REGISTRY[name] = {
+        "name": name,
+        "description": body.get("description", ""),
+        "inputSchema": body.get("input_schema", {}),
+        "server": body.get("server", "external"),
+        "auth_type": body.get("auth_type", "none"),
+    }
+    return {"status": "registered", "tool": name}
+
+
+@admin_router.get("/tools/schema-hash")
 async def get_schema_hashes():
     hashes = {}
     for name, tool in TOOL_REGISTRY.items():
@@ -629,7 +670,7 @@ async def get_schema_hashes():
     return {"schema_hashes": hashes, "drift_detected": {k: len(v) > 1 for k, v in SCHEMA_HISTORY.items()}}
 
 
-@router.post("/tools/mutate-schema")
+@admin_router.post("/tools/mutate-schema")
 async def mutate_tool_schema(request: Request):
     body = await request.json()
     tool_name = body.get("name")
@@ -640,7 +681,7 @@ async def mutate_tool_schema(request: Request):
     return {"status": "schema_updated", "tool": tool_name}
 
 
-@router.get("/directory")
+@admin_router.get("/directory")
 async def directory_listing():
     import os
     try:

@@ -471,11 +471,12 @@ export default function ChatPage() {
       const reader = res.body?.getReader();
       const decoder = new TextDecoder();
       let fullContent = "";
+      let streamError = false;
 
       if (reader) {
         while (true) {
           const { done, value } = await reader.read();
-          if (done) break;
+          if (done || streamError) break;
           const chunk = decoder.decode(value);
           const lines = chunk.split("\n");
           for (const line of lines) {
@@ -489,6 +490,7 @@ export default function ChatPage() {
                       m.id === assistantMessage.id ? { ...m, content: fullContent } : m
                     )
                   );
+                  streamError = true;
                   break;
                 }
                 const content = data.choices?.[0]?.delta?.content || "";
