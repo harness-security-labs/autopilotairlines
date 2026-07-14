@@ -37,7 +37,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v4
-      - run: uv sync --frozen
+      - run: uv sync --frozen --extra test
       - run: uv run pytest
         env:
           DATABASE_URL: postgresql+asyncpg://autopilot:autopilot@localhost:5432/autopilot
@@ -64,7 +64,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v4
-      - run: uv sync --frozen
+      - run: uv sync --frozen --extra test
       - run: uv run pytest
         env:
           DATABASE_URL: postgresql+asyncpg://autopilot:autopilot@localhost:5432/cardservice
