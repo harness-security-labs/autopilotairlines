@@ -189,10 +189,14 @@ def test_payment_points_only(client):
     mock_db.add = MagicMock()
     mock_db.commit = AsyncMock()
 
+    # DOLLARS_PER_POINT = 0.10, so $100 costs exactly 1000 points.
+    # Sending more than needed would trigger the capping branch (points_discount > amount),
+    # which is tested implicitly but would change the returned points_used value.
     class FakeLoyaltyAccount:
         id = uuid.uuid4()
         user_id = uuid.UUID(MOCK_USER["sub"])
         points = 50000
+        tier = "bronze"
 
     account = FakeLoyaltyAccount()
 
@@ -215,16 +219,17 @@ def test_payment_points_only(client):
 
     app.dependency_overrides[get_db] = db_override
 
+    # 1000 points × $0.10/point = $100.00, covering the full amount → method "points"
     resp = client.post("/api/v1/payments", json={
-        "booking_id": BOOKING_ID,
-        "amount": 100.0,
-        "points_used": 10000,
-    }, headers={"Authorization": "Bearer fake"})
+            "booking_id": BOOKING_ID,
+            "amount": 100.0,
+            "points_used": 1000,
+        }, headers={"Authorization": "Bearer fake"})
 
     assert resp.status_code == 200
     data = resp.json()
     assert data["method"] == "points"
-    assert data["points_used"] == 10000
+    assert data["points_used"] == 1000
 
     del app.dependency_overrides[get_db]
 
@@ -236,6 +241,7 @@ def test_payment_insufficient_points(client):
         id = uuid.uuid4()
         user_id = uuid.UUID(MOCK_USER["sub"])
         points = 100
+        tier = "bronze"
 
     async def mock_execute(stmt):
         result = MagicMock()

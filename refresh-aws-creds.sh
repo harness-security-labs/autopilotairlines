@@ -18,18 +18,24 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-ACCESS_KEY=$(echo "$creds" | grep AWS_ACCESS_KEY_ID | cut -d= -f2)
-SECRET_KEY=$(echo "$creds" | grep AWS_SECRET_ACCESS_KEY | cut -d= -f2)
-SESSION_TOKEN=$(echo "$creds" | grep AWS_SESSION_TOKEN | cut -d= -f2)
+ACCESS_KEY=$(echo "$creds" | grep '^AWS_ACCESS_KEY_ID=' | cut -d= -f2-)
+SECRET_KEY=$(echo "$creds" | grep '^AWS_SECRET_ACCESS_KEY=' | cut -d= -f2-)
+SESSION_TOKEN=$(echo "$creds" | grep '^AWS_SESSION_TOKEN=' | cut -d= -f2-)
 
 if [ -z "$ACCESS_KEY" ]; then
     echo "No credentials found. Run: aws sso login --profile $PROFILE"
     exit 1
 fi
 
-sed -i '' "s|^AWS_ACCESS_KEY_ID=.*|AWS_ACCESS_KEY_ID=$ACCESS_KEY|" .env.dev
-sed -i '' "s|^AWS_SECRET_ACCESS_KEY=.*|AWS_SECRET_ACCESS_KEY=$SECRET_KEY|" .env.dev
-sed -i '' "s|^AWS_SESSION_TOKEN=.*|AWS_SESSION_TOKEN=$SESSION_TOKEN|" .env.dev
+# sed -i '' is macOS (BSD) syntax; sed -i is Linux (GNU) syntax.
+SED_INPLACE=(sed -i '')
+if sed --version 2>/dev/null | grep -q GNU; then
+    SED_INPLACE=(sed -i)
+fi
+
+"${SED_INPLACE[@]}" "s|^AWS_ACCESS_KEY_ID=.*|AWS_ACCESS_KEY_ID=$ACCESS_KEY|" .env.dev
+"${SED_INPLACE[@]}" "s|^AWS_SECRET_ACCESS_KEY=.*|AWS_SECRET_ACCESS_KEY=$SECRET_KEY|" .env.dev
+"${SED_INPLACE[@]}" "s|^AWS_SESSION_TOKEN=.*|AWS_SESSION_TOKEN=$SESSION_TOKEN|" .env.dev
 
 echo "Updated .env.dev with fresh credentials from profile: $PROFILE"
 echo "Restart backend: docker compose restart backend"
