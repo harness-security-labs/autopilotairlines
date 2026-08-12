@@ -6,12 +6,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from uuid import UUID
 
 from ..config import settings
-from .context import set_current_user_id
+from ..security.content import redact_pii
+from .context import set_current_user_context
 from .supervisor import supervisor_node
 from .agents.booking_agent import create_booking_agent
 from .agents.payment_agent import create_payment_agent
 from .agents.customer_service_agent import create_customer_service_agent
 from .agents.admin_agent import create_admin_agent
+
+
+def can_route_to_agent(agent_name: str, user_role: str) -> bool:
+    if agent_name != "admin" or not settings.agent_tool_scope_check:
+        return True
+    return user_role == "admin"
 
 
 async def _build_user_context(user_id: str, db: AsyncSession) -> str:
@@ -97,10 +104,12 @@ async def run_agent(
     session_id: str,
     db: AsyncSession,
     active_agent: str | None = None,
+    user_role: str = "anonymous",
+    user_email: str = "",
 ) -> AsyncGenerator[str, None]:
     from ..routers.memory import USER_MEMORIES
 
-    set_current_user_id(user_id)
+    set_current_user_context(user_id, user_role, user_email)
 
     user_context = await _build_user_context(user_id, db)
 
@@ -143,6 +152,11 @@ async def run_agent(
     result = await supervisor_node(state)
     agent_name = result.get("active_agent")
 
+    if not can_route_to_agent(agent_name, user_role):
+        yield "Admin operations require an authenticated administrator account."
+        yield "\n__ACTIVE_AGENT__:customer_service"
+        return
+
     if not agent_name:
         end_messages = result.get("messages", [])
         if end_messages:
@@ -165,6 +179,8 @@ async def run_agent(
 
     if not final_content:
         final_content = "I'm here to help. What would you like to do?"
+    if settings.pii_redaction:
+        final_content = redact_pii(final_content)
 
     chunk_size = 500
     for i in range(0, len(final_content), chunk_size):

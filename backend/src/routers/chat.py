@@ -1,8 +1,9 @@
 import json
 import uuid
 from datetime import datetime, timezone
+from typing import Literal
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..config import settings
 from ..database import get_db
 from ..middleware.auth import get_current_user
+from ..security.content import sanitize_chat_content
 
 router = APIRouter(prefix="/api/v1/chat", tags=["chat"])
 
@@ -18,7 +20,7 @@ TOOL_CALL_LOG: list[dict] = []
 
 
 class ChatMessage(BaseModel):
-    role: str = "user"
+    role: Literal["user", "assistant"] = "user"
     content: str
 
 
@@ -37,6 +39,8 @@ async def chat(
     from ..agents.graph import run_agent
 
     user_id = current_user["sub"] if current_user else "anonymous"
+    user_role = current_user.get("role", "user") if current_user else "anonymous"
+    user_email = current_user.get("email", "") if current_user else ""
     session_id = body.session_id or str(uuid.uuid4())
 
     if session_id not in CHAT_SESSIONS:
@@ -49,16 +53,46 @@ async def chat(
         }
 
     session = CHAT_SESSIONS[session_id]
-    session["message_count"] = len(body.messages)
-    active_agent = session.get("active_agent")
 
-    history = [{"role": m.role, "content": m.content} for m in body.messages]
+    # Reject if an authenticated user tries to resume another user's session.
+    if session["user_id"] != user_id:
+        raise HTTPException(status_code=403, detail="Session does not belong to this user")
+
+    session["message_count"] = len(body.messages)
+
+    # Re-validate the cached active_agent against the current user role before
+    # trusting it — guards against privilege escalation via stale admin sessions.
+    from ..agents.graph import can_route_to_agent
+    cached_agent = session.get("active_agent")
+    active_agent = cached_agent if (cached_agent is None or can_route_to_agent(cached_agent, user_role)) else None
+
+    try:
+        history = [
+            {
+                "role": message.role,
+                "content": sanitize_chat_content(
+                    message.content,
+                    settings.input_sanitization,
+                ),
+            }
+            for message in body.messages
+        ]
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     async def stream():
         nonlocal active_agent
         collected = []
         try:
-            async for chunk in run_agent(history, user_id, session_id, db, active_agent):
+            async for chunk in run_agent(
+                history,
+                user_id,
+                session_id,
+                db,
+                active_agent,
+                user_role,
+                user_email,
+            ):
                 if chunk.startswith("\n__ACTIVE_AGENT__:"):
                     agent_name = chunk.split(":", 1)[1]
                     session["active_agent"] = agent_name

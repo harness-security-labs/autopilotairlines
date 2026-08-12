@@ -14,7 +14,7 @@ from ..models.user import User
 from ..models.booking import Booking
 from ..models.flight import Flight
 from ..models.loyalty import LoyaltyAccount, LoyaltyTransaction
-from ..middleware.auth import require_auth
+from ..middleware.auth import require_admin_user
 from ..services.saas.automail import send_email
 from .bookings import ADMIN_COUPONS
 
@@ -23,7 +23,7 @@ router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
 
 @router.get("/stats")
 async def get_stats(
-    current_user: dict = Depends(require_auth),
+    current_user: dict = Depends(require_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
     users_count = await db.execute(select(func.count(User.id)))
@@ -39,7 +39,7 @@ async def get_stats(
 @router.get("/audit-logs")
 async def get_audit_logs(
     limit: int = 50,
-    current_user: dict = Depends(require_auth),
+    current_user: dict = Depends(require_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
@@ -67,7 +67,7 @@ async def list_all_users(
     search: str = Query("", description="Search by name or email"),
     role: str = Query("", description="Filter by role"),
     tier: str = Query("", description="Filter by loyalty tier"),
-    current_user: dict = Depends(require_auth),
+    current_user: dict = Depends(require_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
     query = select(User)
@@ -113,7 +113,7 @@ async def list_all_users(
 
 @router.post("/scheduler/trigger")
 async def trigger_scheduler(
-    current_user: dict = Depends(require_auth),
+    current_user: dict = Depends(require_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
     from ..services.flight_scheduler import check_and_add_demand_flights, check_and_add_holiday_flights
@@ -136,7 +136,7 @@ class UserRoleUpdate(BaseModel):
 async def update_user_role(
     user_id: str,
     body: UserRoleUpdate,
-    current_user: dict = Depends(require_auth),
+    current_user: dict = Depends(require_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(select(User).where(User.id == UUID(user_id)))
@@ -158,7 +158,7 @@ class FlightReschedule(BaseModel):
 async def reschedule_flight(
     flight_id: str,
     body: FlightReschedule,
-    current_user: dict = Depends(require_auth),
+    current_user: dict = Depends(require_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(select(Flight).where(Flight.id == UUID(flight_id)))
@@ -213,7 +213,7 @@ class FlightCancel(BaseModel):
 async def cancel_flight(
     flight_id: str,
     body: FlightCancel = FlightCancel(),
-    current_user: dict = Depends(require_auth),
+    current_user: dict = Depends(require_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
     from ..models.payment import Payment, RefundRecord
@@ -362,7 +362,7 @@ class BookingCancelAdmin(BaseModel):
 async def admin_cancel_booking(
     booking_id: str,
     body: BookingCancelAdmin = BookingCancelAdmin(),
-    current_user: dict = Depends(require_auth),
+    current_user: dict = Depends(require_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
     from ..models.payment import Payment, RefundRecord
@@ -473,7 +473,7 @@ async def list_all_flights(
     page: int = Query(1, ge=1),
     page_size: int = Query(10, ge=1, le=100),
     search: str = Query("", description="Search by flight number, origin, or destination"),
-    current_user: dict = Depends(require_auth),
+    current_user: dict = Depends(require_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
     from ..models.flight import FlightCancellation
@@ -567,7 +567,7 @@ async def list_all_bookings(
     flight_id: str | None = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(10, ge=1, le=100),
-    current_user: dict = Depends(require_auth),
+    current_user: dict = Depends(require_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
     query = select(Booking)
@@ -637,7 +637,7 @@ class OfferCreate(BaseModel):
 @router.post("/offers")
 async def create_offer(
     body: OfferCreate,
-    current_user: dict = Depends(require_auth),
+    current_user: dict = Depends(require_admin_user),
 ):
     conditions = {}
     if body.conditions:
@@ -675,7 +675,7 @@ async def create_offer(
 
 @router.get("/offers")
 async def list_offers(
-    current_user: dict = Depends(require_auth),
+    current_user: dict = Depends(require_admin_user),
 ):
     return {"offers": ADMIN_COUPONS}
 
@@ -694,7 +694,7 @@ class CreditPointsRequest(BaseModel):
 async def credit_points(
     user_id: str,
     body: CreditPointsRequest,
-    current_user: dict = Depends(require_auth),
+    current_user: dict = Depends(require_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(select(User).where(User.id == UUID(user_id)))
@@ -738,7 +738,7 @@ class TierUpdateRequest(BaseModel):
 async def update_user_tier(
     user_id: str,
     body: TierUpdateRequest,
-    current_user: dict = Depends(require_auth),
+    current_user: dict = Depends(require_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
     if body.tier not in VALID_TIERS:
@@ -794,7 +794,7 @@ class ScheduleOverrideRequest(BaseModel):
 async def override_flight_schedule(
     flight_id: str,
     body: ScheduleOverrideRequest,
-    current_user: dict = Depends(require_auth),
+    current_user: dict = Depends(require_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(select(Flight).where(Flight.id == UUID(flight_id)))
