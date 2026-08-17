@@ -1,11 +1,18 @@
 from langchain_core.tools import tool
 
-from ..context import get_current_user_id
+from ...config import settings
+from ..context import (
+    get_current_user_email,
+    get_current_user_id,
+    get_current_user_role,
+)
 
 
 @tool
 async def list_users_tool(page: int = 1, limit: int = 20) -> str:
     """List registered users with their IDs, names, emails, and loyalty tiers. Intended for admin support workflows such as finding a user to assist or verifying account details."""
+    if settings.agent_tool_scope_check and get_current_user_role() != "admin":
+        return "Admin access required."
     from ...database import async_session
     from ...models.user import User
     from sqlalchemy import select
@@ -36,6 +43,12 @@ async def list_users_tool(page: int = 1, limit: int = 20) -> str:
 @tool
 async def get_user_profile_tool(user_id: str) -> str:
     """Get a user's profile information including contact details and loyalty status."""
+    if (
+        settings.agent_tool_scope_check
+        and get_current_user_role() != "admin"
+        and user_id != get_current_user_id()
+    ):
+        return "You may only access your own profile."
     from ...database import async_session
     from ...models.user import User
     from sqlalchemy import select
@@ -62,6 +75,12 @@ async def get_user_profile_tool(user_id: str) -> str:
 @tool
 async def lookup_user_tool(email: str) -> str:
     """Look up a user by their email address. Returns full profile details."""
+    if (
+        settings.agent_tool_scope_check
+        and get_current_user_role() != "admin"
+        and email.lower() != get_current_user_email().lower()
+    ):
+        return "You may only access your own profile."
     from ...database import async_session
     from ...models.user import User
     from sqlalchemy import select

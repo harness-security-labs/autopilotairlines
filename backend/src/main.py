@@ -11,7 +11,11 @@ from fastapi.responses import JSONResponse
 from .config import settings
 from .database import engine, Base
 from .routers import auth, flights, bookings, users, payments, loyalty, refunds, chat, admin, memory, checkin, baggage, payment_methods, reports
-from .mcp.server import mcp_app, admin_router as mcp_admin_router
+from .mcp.server import (
+    mcp_app,
+    admin_router as mcp_admin_router,
+    session_manager as mcp_session_manager,
+)
 from .services.flight_scheduler import run_scheduler
 
 
@@ -41,13 +45,14 @@ async def _sync_schema(conn):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-        await _sync_schema(conn)
-    scheduler_task = asyncio.create_task(run_scheduler())
-    yield
-    scheduler_task.cancel()
-    await engine.dispose()
+    async with mcp_session_manager.run():
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+            await _sync_schema(conn)
+        scheduler_task = asyncio.create_task(run_scheduler())
+        yield
+        scheduler_task.cancel()
+        await engine.dispose()
 
 
 app = FastAPI(

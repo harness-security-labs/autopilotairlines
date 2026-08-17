@@ -43,15 +43,19 @@ class TokenResponse(BaseModel):
 
 
 def create_token(user_id: str, email: str, role: str) -> str:
+    scopes = ["tools:read", "booking:write", "payments:write"]
+    if role == "admin":
+        scopes = ["tools:*"]
     payload = {
         "sub": user_id,
         "email": email,
         "role": role,
+        "scope": " ".join(scopes),
         "iat": datetime.now(timezone.utc),
         "exp": datetime.now(timezone.utc) + timedelta(hours=settings.jwt_expiry_hours),
     }
     if settings.jwt_audience_required:
-        payload["aud"] = "autopilot-airlines"
+        payload["aud"] = settings.jwt_audience
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
 

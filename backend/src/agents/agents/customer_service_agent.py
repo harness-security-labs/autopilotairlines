@@ -3,6 +3,7 @@ from datetime import date
 
 from ..llm import get_llm
 from ..prompts import CUSTOMER_SERVICE_PROMPT
+from ..prompt_utils import append_untrusted_user_memories
 from ..tools.user_tools import get_user_profile_tool, lookup_user_tool
 from ..tools.email_tools import send_email_tool, get_sent_emails_tool
 from ..tools.loyalty_tools import check_loyalty_points_tool, modify_loyalty_points_tool
@@ -35,8 +36,7 @@ def create_customer_service_agent(user_context: str, user_memories: list[str] | 
         today=date.today().isoformat(),
         user_context=user_context,
     )
-    if user_memories:
-        prompt += "\n\nUser preferences (always follow these):\n" + "\n".join(f"- {m}" for m in user_memories)
+    prompt = append_untrusted_user_memories(prompt, user_memories)
 
     return create_react_agent(
         model=llm,

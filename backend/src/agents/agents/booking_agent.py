@@ -4,6 +4,7 @@ from datetime import date
 
 from ..llm import get_llm
 from ..prompts import BOOKING_AGENT_PROMPT
+from ..prompt_utils import append_untrusted_user_memories
 from ..tools.flight_tools import search_flights_tool, get_flight_tool
 from ..tools.booking_tools import create_booking_tool, cancel_booking_tool, book_connecting_flight_tool, reschedule_booking_tool, get_reschedule_quote_tool, get_booking_quote_tool, get_cancellation_quote_tool, get_connecting_flight_quote_tool
 from ..tools.selfservice_tools import (
@@ -45,8 +46,7 @@ def create_booking_agent(user_context: str, user_memories: list[str] | None = No
         today=date.today().isoformat(),
         user_context=user_context,
     )
-    if user_memories:
-        prompt += "\n\nUser preferences (always follow these):\n" + "\n".join(f"- {m}" for m in user_memories)
+    prompt = append_untrusted_user_memories(prompt, user_memories)
 
     return create_react_agent(
         model=llm,
