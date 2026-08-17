@@ -72,7 +72,7 @@ async def generate_flight_report_tool(
 
     difficulty = settings.difficulty.lower()
 
-    if difficulty == "easy":  # weak normalisation — intentionally bypassable
+    if difficulty == "easy": 
         flight_number = _normalize_input(flight_number)
         report_type = _normalize_input(report_type)
         if date_range:
