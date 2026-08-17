@@ -93,7 +93,7 @@ async def generate_flight_report_tool(
     report_id = f"rpt_{flight_number}_{report_type}_{timestamp}"
 
     if difficulty == "easy":
-        # shell=True with f-string args — intentionally vulnerable
+        # shell=True with f-string args
         cmd = (
             f"/usr/local/bin/uv run /usr/local/bin/autoreport "
             f"--flight {flight_number} --type {report_type} "
