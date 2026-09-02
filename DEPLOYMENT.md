@@ -34,6 +34,12 @@ This is the recommended way to run the full stack.
 
 2. **Set your LLM provider** in `.env.dev` (see [LLM configuration](#llm-configuration) below).
 
+   If you're using **AWS Bedrock**, populate the credential fields *before* starting Compose — the backend reads them from `.env.dev` at container start:
+
+   ```bash
+   ./refresh-aws-creds.sh <aws-profile>
+   ```
+
 3. **Build and start everything:**
 
    ```bash
@@ -77,12 +83,29 @@ AWS_SESSION_TOKEN=...          # required for SSO / temporary credentials
 BEDROCK_MODEL=global.anthropic.claude-sonnet-4-6
 ```
 
-If you authenticate via AWS SSO, the session token expires (~12h). Refresh it into `.env.dev` with the helper script, then restart the backend:
+`AWS_SESSION_TOKEN` is required for SSO / temporary credentials. Rather than pasting the three credential values by hand, use the helper script — it reads them from a named AWS profile via `aws configure export-credentials` and rewrites the `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `AWS_SESSION_TOKEN` lines in `.env.dev` in place:
+
+```bash
+./refresh-aws-creds.sh <aws-profile-name>
+# or: AWS_PROFILE=<aws-profile-name> ./refresh-aws-creds.sh
+```
+
+Prerequisites: the AWS CLI v2, a configured profile, and an active SSO session. If the script reports `Failed to export credentials` or `No credentials found`, log in first:
+
+```bash
+aws sso login --profile <aws-profile-name>
+```
+
+**Run the script before `docker compose up`.** The backend reads `.env.dev` when its container starts, so credentials must already be in the file — Compose will not pick up later edits on its own.
+
+SSO session tokens expire (~12h). When they do, the agent starts failing with provider auth errors (401/`ExpiredToken`); refresh and restart the backend:
 
 ```bash
 ./refresh-aws-creds.sh <aws-profile-name>
 docker compose restart backend
 ```
+
+`AWS_REGION` must be a region where your account has access to `BEDROCK_MODEL`, and the model must be enabled for the account. Setting `AWS_REGION` + `AWS_ACCESS_KEY_ID` is what selects Bedrock over the OpenAI-compatible path, so leave the `OPENAI_*` block empty when using Bedrock.
 
 > **Never commit real credentials.** `.env*` files are git-ignored. Treat any keys checked into a working copy as compromised and rotate them.
 
