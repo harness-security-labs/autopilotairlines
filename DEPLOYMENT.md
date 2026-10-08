@@ -4,9 +4,9 @@ AutoPilot Airlines is a multi-service application made up of four runtime servic
 
 | Service        | Tech                          | Port | Image (CI)                                          |
 |----------------|-------------------------------|------|-----------------------------------------------------|
-| `frontend`     | Next.js 16 / React 19         | 3000 | `ghcr.io/allvapps/autopilotairlines-frontend`       |
-| `backend`      | FastAPI + LangGraph AI agent  | 8000 | `ghcr.io/allvapps/autopilotairlines-backend`        |
-| `card-service` | FastAPI                       | 8002 | `ghcr.io/allvapps/autopilotairlines-cardservice`    |
+| `frontend`     | Next.js 16 / React 19         | 3000 | `ghcr.io/harness-security-labs/autopilotairlines-frontend`       |
+| `backend`      | FastAPI + LangGraph AI agent  | 8000 | `ghcr.io/harness-security-labs/autopilotairlines-backend`        |
+| `card-service` | FastAPI                       | 8002 | `ghcr.io/harness-security-labs/autopilotairlines-cardservice`    |
 | `postgres`     | pgvector/pgvector:pg16        | 5432 | —                                                   |
 | `redis`        | redis:7-alpine                | 6379 | —                                                   |
 
@@ -176,7 +176,7 @@ pnpm build && pnpm start
 `.github/workflows/build.yml` runs on pushes to `main`, version tags (`v*`), and PRs:
 
 1. **Test** — runs `pytest` for `backend` and `card-service` against a Postgres service container.
-2. **Build & push** — builds multi-arch (`linux/amd64`, `linux/arm64`) images for `backend`, `frontend`, and `card-service`, pushing to GitHub Container Registry (`ghcr.io/allvapps/...`). Images are not pushed on pull requests.
+2. **Build & push** — builds multi-arch (`linux/amd64`, `linux/arm64`) images for `backend`, `frontend`, and `card-service`, pushing to GitHub Container Registry (`ghcr.io/harness-security-labs/...`). Images are not pushed on pull requests.
 
 Image tags:
 
@@ -191,11 +191,11 @@ Pull the desired tag and run the same services as in `docker-compose.yml`, swapp
 
 ```yaml
 backend:
-  image: ghcr.io/allvapps/autopilotairlines-backend:dev-latest
+  image: ghcr.io/harness-security-labs/autopilotairlines-backend:dev-latest
 frontend:
-  image: ghcr.io/allvapps/autopilotairlines-frontend:dev-latest
+  image: ghcr.io/harness-security-labs/autopilotairlines-frontend:dev-latest
 card-service:
-  image: ghcr.io/allvapps/autopilotairlines-cardservice:dev-latest
+  image: ghcr.io/harness-security-labs/autopilotairlines-cardservice:dev-latest
 ```
 
 For a non-local deployment, set `NEXT_PUBLIC_API_URL` on the frontend to the publicly reachable backend URL and set `CORS_ALLOW_ORIGINS` on the backend to the frontend's origin.

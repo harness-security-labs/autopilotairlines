@@ -76,13 +76,13 @@ jobs:
       matrix:
         include:
           - service: backend
-            image: ghcr.io/allvapps/autopilotairlines-backend
+            image: ghcr.io/harness-security-labs/autopilotairlines-backend
             context: ./backend
           - service: frontend
-            image: ghcr.io/allvapps/autopilotairlines-frontend
+            image: ghcr.io/harness-security-labs/autopilotairlines-frontend
             context: ./frontend
           - service: card-service
-            image: ghcr.io/allvapps/autopilotairlines-cardservice
+            image: ghcr.io/harness-security-labs/autopilotairlines-cardservice
             context: ./card-service
     steps:
       - uses: actions/checkout@v4
